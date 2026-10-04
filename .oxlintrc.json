@@ -1,0 +1,30 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "oxc", "unicorn"],
+  "options": {
+    "typeAware": true
+  },
+  "categories": {
+    "correctness": "error",
+    "pedantic": "error",
+    "perf": "error"
+  },
+  "rules": {
+    "curly": ["error", "all"],
+    "unicorn/no-array-for-each": "error",
+    "only-throw-error": "off",
+    "strict-void-return": "off",
+    "max-lines-per-function": "off",
+    "no-redeclare": "off",
+    "prefer-readonly-parameter-types": "off",
+    "strict-boolean-expressions": "off",
+    "no-misused-promises": "off",
+    "typescript/prefer-promise-reject-errors": "off",
+    "no-await-in-loop": "off",
+    "max-lines": "off",
+    "max-classes-per-file": "off",
+    "unicorn/no-useless-undefined": ["error", { "checkArguments": false }],
+    "typescript/consistent-type-definitions": "off"
+  },
+  "ignorePatterns": ["dist/*"]
+}

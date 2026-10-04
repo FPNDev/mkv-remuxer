@@ -1,0 +1,41 @@
+{
+  "name": "flix-mkv-remuxer",
+  "version": "0.1.0",
+  "description": "Remux Matroska and WebM files into HLS (fMP4 and WebVTT) on demand from any random-access byte source",
+  "keywords": [
+    "matroska",
+    "mkv",
+    "webm",
+    "hls",
+    "fmp4",
+    "remux",
+    "ffmpeg"
+  ],
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepare": "tsc"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.5",
+    "oxlint": "^1.83.0",
+    "oxlint-tsgolint": "^7.0.2003",
+    "typescript": "^7.0.2"
+  }
+}
