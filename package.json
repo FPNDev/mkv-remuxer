@@ -1,6 +1,6 @@
 {
   "name": "@rimjoeh/mkv-remuxer",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Remux Matroska and WebM files into HLS (fMP4 and WebVTT) on demand from any random-access byte source",
   "keywords": [
     "matroska",

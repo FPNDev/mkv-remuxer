@@ -84,8 +84,6 @@ export class AssetRegistry {
       signal,
     );
 
-    // Callers waiting on the same index all resume here. The first one builds
-    // the asset; the rest must share it, or each writes the same playlists.
     const existing = this.assets.get(key);
     if (existing) {
       return existing;
