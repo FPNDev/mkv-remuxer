@@ -1,6 +1,7 @@
-export { HlsService } from './hls/hls-service.js';
+export { createHlsService } from './hls/hls-service.js';
 export type {
   FileListing,
+  HlsService,
   HlsServiceOptions,
   HlsStatus,
   JobStats,

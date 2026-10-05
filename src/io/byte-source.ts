@@ -35,11 +35,15 @@ export type ReadHint =
   | { purpose: 'index'; signal: AbortSignal }
   | { purpose: 'media'; foreground: boolean };
 
-/** One file of a source. */
+/**
+ * One file of a source. `id` is chosen by the provider and must stay the same
+ * for the same file: it names the file's cache directory and URLs, so it is
+ * limited to letters, digits, `_` and `-` (at most 128). Extra fields pass
+ * through to `HlsService.files`.
+ */
 export interface SourceFile {
-  index: number;
+  id: string;
   name: string;
-  path: string;
   length: number;
 }
 
@@ -54,10 +58,10 @@ export interface SourceListing {
  */
 export interface SourceProvider {
   list(sourceId: string): Promise<SourceListing>;
-  /** Runs `work` over file `fileIndex`, keeping the source open meanwhile. */
+  /** Runs `work` over file `fileId`, keeping the source open meanwhile. */
   lease<T>(
     sourceId: string,
-    fileIndex: number,
+    fileId: string,
     hint: ReadHint,
     work: (source: LeasedSource) => Promise<T>,
   ): Promise<T>;

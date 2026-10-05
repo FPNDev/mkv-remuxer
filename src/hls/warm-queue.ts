@@ -6,12 +6,12 @@ const MAX_BACKLOG = 256;
 
 export type WarmRequest = {
   sourceId: string;
-  fileIndex: number | undefined;
+  fileId: string | undefined;
 };
 
 export type WarmQueueOptions = {
   concurrency: number;
-  warm: (sourceId: string, fileIndex: number | undefined) => Promise<void>;
+  warm: (sourceId: string, fileId: string | undefined) => Promise<void>;
   logger: Logger;
 };
 
@@ -25,12 +25,12 @@ export class WarmQueue {
     return this.backlog.length;
   }
 
-  knows(sourceId: string, fileIndex: number | undefined): boolean {
-    const key = warmKey(sourceId, fileIndex);
+  knows(sourceId: string, fileId: string | undefined): boolean {
+    const key = warmKey(sourceId, fileId);
     return (
       this.running.has(key) ||
       this.backlog.some(
-        (entry) => warmKey(entry.sourceId, entry.fileIndex) === key,
+        (entry) => warmKey(entry.sourceId, entry.fileId) === key,
       )
     );
   }
@@ -39,8 +39,8 @@ export class WarmQueue {
     return this.backlog.length >= MAX_BACKLOG;
   }
 
-  request(sourceId: string, fileIndex: number | undefined): boolean {
-    if (this.knows(sourceId, fileIndex)) {
+  request(sourceId: string, fileId: string | undefined): boolean {
+    if (this.knows(sourceId, fileId)) {
       return false;
     }
     if (this.full) {
@@ -49,7 +49,7 @@ export class WarmQueue {
       });
       return false;
     }
-    this.backlog.push({ sourceId, fileIndex });
+    this.backlog.push({ sourceId, fileId });
     this.pump();
     return true;
   }
@@ -60,10 +60,10 @@ export class WarmQueue {
       this.backlog.length > 0
     ) {
       const next = this.backlog.shift()!;
-      const key = warmKey(next.sourceId, next.fileIndex);
+      const key = warmKey(next.sourceId, next.fileId);
       this.running.add(key);
       this.options
-        .warm(next.sourceId, next.fileIndex)
+        .warm(next.sourceId, next.fileId)
         .catch((err: unknown) => {
           // A warm failure costs a cold first play and nothing else.
           this.options.logger.warn('Could not warm a title', {
@@ -79,10 +79,11 @@ export class WarmQueue {
   }
 }
 
-// An undefined fileIndex means the default file of the source.
+// An undefined fileId means the default file of the source. A colon never
+// appears in an id, so the key cannot clash with a real file.
 export function warmKey(
   sourceId: string,
-  fileIndex: number | undefined,
+  fileId: string | undefined,
 ): string {
-  return `${sourceId}/${fileIndex ?? 'largest'}`;
+  return `${sourceId}/${fileId ?? ':default'}`;
 }

@@ -16,26 +16,31 @@ export class CacheLayout {
     this.hlsDir = path.join(root, 'hls');
   }
 
+  // Its mtime records when the source was last asked for, across restarts.
+  usedMarker(sourceId: string): string {
+    return path.join(this.hlsDir, sourceId, '.used');
+  }
+
   interleavingFile(): string {
     return path.join(this.root, 'interleaving.json');
   }
 
-  mediaDir(sourceId: string, fileIndex: number): string {
-    return path.join(this.hlsDir, sourceId, String(fileIndex));
+  mediaDir(sourceId: string, fileId: string): string {
+    return path.join(this.hlsDir, sourceId, fileId);
   }
 
-  indexFile(sourceId: string, fileIndex: number): string {
-    return path.join(this.mediaDir(sourceId, fileIndex), 'index.json');
+  indexFile(sourceId: string, fileId: string): string {
+    return path.join(this.mediaDir(sourceId, fileId), 'index.json');
   }
 
-  masterFile(sourceId: string, fileIndex: number): string {
-    return path.join(this.mediaDir(sourceId, fileIndex), 'master.m3u8');
+  masterFile(sourceId: string, fileId: string): string {
+    return path.join(this.mediaDir(sourceId, fileId), 'master.m3u8');
   }
 
   // relative is a playlist URI, so its separator is always a forward slash.
-  mediaFile(sourceId: string, fileIndex: number, relative: string): string {
+  mediaFile(sourceId: string, fileId: string, relative: string): string {
     return path.join(
-      this.mediaDir(sourceId, fileIndex),
+      this.mediaDir(sourceId, fileId),
       ...relative.split('/'),
     );
   }

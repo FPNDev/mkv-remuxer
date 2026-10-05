@@ -27,14 +27,14 @@ script builds `dist/` on install.
 ## Usage
 
 ```ts
-import { HlsService, type SourceProvider } from 'flix-mkv-remuxer';
+import { createHlsService, type SourceProvider } from 'flix-mkv-remuxer';
 
 const provider: SourceProvider = {
   async list(sourceId) {
     return { files: await catalog.files(sourceId) };
   },
-  async lease(sourceId, fileIndex, hint, work) {
-    const source = await catalog.open(sourceId, fileIndex);
+  async lease(sourceId, fileId, hint, work) {
+    const source = await catalog.open(sourceId, fileId);
     try {
       return await work(source);
     } finally {
@@ -43,47 +43,55 @@ const provider: SourceProvider = {
   },
 };
 
-const hls = await HlsService.create({
+const hls = await createHlsService({
   cacheDir: '/var/cache/remuxer',
   provider,
   ffmpegPath: '/usr/bin/ffmpeg',
 });
 
-const master = await hls.master('movie-42', undefined, signal);
-// master.path is a playlist on disk; serve it with master.contentType
-// and master.cacheControl.
+// GET /:sourceId/:fileId/*parts
+const file = await hls.resolve(sourceId, fileId, parts, signal);
+// file.path is on disk; send it with file.contentType and file.cacheControl.
 ```
 
 `catalog` stands for whatever the host uses to find and open its files.
+[`examples/directory-server.ts`](examples/directory-server.ts) is a complete
+server over a directory of videos, using only `node:http` and `node:fs`.
 
 ### Routing
 
-The master playlist refers to its media playlists by relative URLs of the
-form `<sourceId>/<fileIndex>/video/index.m3u8`. Serve the master playlist from
-a URL whose directory is the root of those paths, and route everything below
-`<sourceId>/<fileIndex>/` to `resolve`:
+Every URL the library produces has the shape `<sourceId>/<fileId>/...`, and
+`resolve` serves all of them, the master playlist included:
 
-```ts
-// GET /:sourceId/:fileIndex/*parts
-const file = await hls.resolve(sourceId, fileIndex, parts, signal);
-```
+| Path                                              | Serves               |
+| ------------------------------------------------- | -------------------- |
+| `<sourceId>/<fileId>/master.m3u8`                 | Master playlist      |
+| `<sourceId>/<fileId>/video/index.m3u8`            | Video media playlist |
+| `<sourceId>/<fileId>/audio/<track>/init.mp4`      | Audio init segment   |
+| `<sourceId>/<fileId>/subtitles/<track>/00003.vtt` | Subtitle segment     |
+
+Rendition URIs in the master are relative to the master's own URL. A host
+that serves the master from elsewhere sets `masterUriPrefix` so those URIs
+still land under `<sourceId>/<fileId>/`.
 
 `resolve` checks every path part before it touches the disk. It returns a
 `ServedFile`: a path on disk plus the content type and cache header to send.
 
 ### Methods
 
-| Method                                         | Does                                                                                  |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `HlsService.create(options)`                   | Checks ffmpeg, loads the cache from disk, starts the cache sweep.                     |
-| `master(sourceId, fileIndex?, signal?)`        | Master playlist. Without `fileIndex`, the first Matroska or WebM file of the source.  |
-| `resolve(sourceId, fileIndex, parts, signal?)` | Media playlist, init segment or media segment for one path below the master playlist. |
-| `warm(sourceId, fileIndex?)`                   | Prepares the opening segments in the background and reports progress.                 |
-| `files(sourceId, signal?)`                     | File list of a source, each file marked `playable` when it is Matroska or WebM.       |
-| `status()`                                     | Job counts and cache usage.                                                           |
-| `close()`                                      | Stops the cache sweep and kills running ffmpeg processes.                             |
+| Method                                      | Does                                                                              |
+| ------------------------------------------- | --------------------------------------------------------------------------------- |
+| `createHlsService(options)`                 | Checks ffmpeg, loads the cache from disk, starts the cache sweep.                 |
+| `master(sourceId, fileId?, signal?)`        | Master playlist. Without `fileId`, the first Matroska or WebM file of the source. |
+| `resolve(sourceId, fileId, parts, signal?)` | Master, media playlist, init segment or media segment for one path.               |
+| `warm(sourceId, fileId?)`                   | Prepares the opening segments in the background and reports progress.             |
+| `files(sourceId, signal?)`                  | File list of a source, each file marked `playable` when it is Matroska or WebM.   |
+| `status()`                                  | Job counts and cache usage.                                                       |
+| `close()`                                   | Stops the cache sweep and kills running ffmpeg processes.                         |
 
-A source id is 1 to 128 characters from `A-Z`, `a-z`, `0-9`, `_` and `-`.
+Source and file ids are 1 to 128 characters from `A-Z`, `a-z`, `0-9`, `_` and
+`-`. The provider picks them; they name cache directories and URLs, so a file
+must keep its id for as long as its cache should stay valid.
 
 Pass a request's `AbortSignal` as `signal`. Once every caller waiting on a
 job has gone, the job is cancelled, including its ffmpeg process.
@@ -95,7 +103,7 @@ interface SourceProvider {
   list(sourceId: string): Promise<SourceListing>;
   lease<T>(
     sourceId: string,
-    fileIndex: number,
+    fileId: string,
     hint: ReadHint,
     work: (source: LeasedSource) => Promise<T>,
   ): Promise<T>;
@@ -105,8 +113,8 @@ interface SourceProvider {
 }
 ```
 
-- `list` returns the files of a source. Extra fields on the result are passed
-  through by `files`.
+- `list` returns the files of a source, each with `id`, `name` and `length`.
+  Extra fields on the result and on each file are passed through by `files`.
 - `lease` runs `work` over one file and keeps the file open while `work`
   runs. `hint.purpose` is `'index'` when the library reads the file's
   metadata, with a `signal` that cancels the read, and `'media'` when it
@@ -148,8 +156,8 @@ A `LeasedSource` is a `ByteSource` with a `name` plus optional hooks:
 | `cacheTotalBytes`       | sum of the two above | Budget for everything under `cacheDir`, host stores included.                                                                                                                     |
 | `cacheSweepMs`          | `300000`             | Interval of the cache sweep.                                                                                                                                                      |
 | `hostStores`            | `{}`                 | Extra directories the host keeps under the same total budget. Each entry has `dir`, `oldestUsedAt()` and `evictOldest(bytes)`.                                                    |
-| `hostDataDir`           | none                 | Directory with one subdirectory per source that the host keeps. Counted against the metadata budget.                                                                              |
-| `markerFile`            | none                 | Maps a source id to a file whose presence keeps that source's metadata accounted.                                                                                                 |
+| `hostDataDir`           | none                 | Directory with one subdirectory per source that the host keeps. Counted against the metadata budget and deleted with the source's metadata.                                       |
+| `masterUriPrefix`       | none                 | `(sourceId, fileId) => string` prepended to rendition URIs in master playlists, for a master served from somewhere other than `<sourceId>/<fileId>/master.m3u8`.                  |
 | `logger`                | silent               | Object with `debug`, `info`, `warn` and `error(message, fields?)`.                                                                                                                |
 
 The sweep also deletes stale `*.tmp` files, older than one hour, under the

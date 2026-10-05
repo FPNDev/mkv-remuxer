@@ -36,6 +36,7 @@ export type AssetRegistryOptions = {
   queue: TaskQueue;
   segmentDuration: number;
   warmSegments: number;
+  masterUriPrefix: (sourceId: string, fileId: string) => string;
   logger: Logger;
 };
 
@@ -48,32 +49,32 @@ export class AssetRegistry {
     this.order = new SizeLru(MEMORY_ASSETS);
   }
 
-  static indexKey(sourceId: string, fileIndex: number): string {
-    return `index:${sourceId}/${fileIndex}`;
+  static indexKey(sourceId: string, fileId: string): string {
+    return `index:${sourceId}/${fileId}`;
   }
 
   static segmentKey(
     sourceId: string,
-    fileIndex: number,
+    fileId: string,
     parts: string[],
   ): string {
-    return `segment:${sourceId}/${fileIndex}/${parts.join('/')}`;
+    return `segment:${sourceId}/${fileId}/${parts.join('/')}`;
   }
 
   async get(
     sourceId: string,
-    fileIndex: number,
+    fileId: string,
     priority: Priority = Priority.Foreground,
     signal?: AbortSignal,
   ): Promise<Asset> {
-    const key = `${sourceId}/${fileIndex}`;
+    const key = `${sourceId}/${fileId}`;
     const cached = this.assets.get(key);
     if (cached) {
       this.order.touch(key);
 
       return cached;
     }
-    const indexKey = AssetRegistry.indexKey(sourceId, fileIndex);
+    const indexKey = AssetRegistry.indexKey(sourceId, fileId);
     if (priority === Priority.Foreground) {
       this.options.queue.promote(indexKey);
     }
@@ -84,39 +85,47 @@ export class AssetRegistry {
     }
     const { index, source } = await this.indexOf(
       sourceId,
-      fileIndex,
+      fileId,
       priority,
       signal,
     );
 
-    const asset = this.build(sourceId, fileIndex, index);
+    const asset = this.build(sourceId, fileId, index);
     this.remember(key, asset);
 
     source?.onCorrupt?.((error) => {
       asset.drop(error);
-      void this.forget(sourceId, fileIndex);
+      void this.forget(sourceId, fileId);
     });
 
     return asset;
   }
 
   // The largest Matroska file is the feature; samples and extras are smaller.
-  async defaultFileIndex(sourceId: string): Promise<number> {
+  async defaultFileId(sourceId: string): Promise<string> {
     const info = await this.options.provider.list(sourceId);
     const firstFile = info.files.find((file) => MATROSKA_FILE.test(file.name));
     if (!firstFile) {
       throw new NotFoundError('Source contains no MKV or WebM files');
     }
-    return firstFile.index;
+    return firstFile.id;
   }
 
-  private build(sourceId: string, fileIndex: number, index: MediaIndex): Asset {
-    const { layout, provider, segments, remuxer, queue, warmSegments, logger } =
-      this.options;
+  private build(sourceId: string, fileId: string, index: MediaIndex): Asset {
+    const {
+      layout,
+      provider,
+      segments,
+      remuxer,
+      queue,
+      warmSegments,
+      masterUriPrefix,
+      logger,
+    } = this.options;
 
     return new Asset({
       sourceId,
-      fileIndex,
+      fileId,
       index,
       layout,
       provider,
@@ -124,6 +133,7 @@ export class AssetRegistry {
       remuxer,
       queue,
       warmSegments,
+      masterUriPrefix,
       logger,
     });
   }
@@ -136,8 +146,8 @@ export class AssetRegistry {
     }
   }
 
-  private async forget(sourceId: string, fileIndex: number): Promise<void> {
-    const mediaDir = this.options.layout.mediaDir(sourceId, fileIndex);
+  private async forget(sourceId: string, fileId: string): Promise<void> {
+    const mediaDir = this.options.layout.mediaDir(sourceId, fileId);
     try {
       await rm(mediaDir, { recursive: true, force: true });
     } catch (err) {
@@ -145,25 +155,25 @@ export class AssetRegistry {
         'Could not delete media built from corrupt data',
         {
           sourceId,
-          fileIndex,
+          fileId,
           error: errorMessage(err),
         },
       );
     }
     this.options.segments.forgetUnder(mediaDir);
-    const key = `${sourceId}/${fileIndex}`;
+    const key = `${sourceId}/${fileId}`;
     this.assets.delete(key);
     this.order.delete(key);
   }
 
   private async indexOf(
     sourceId: string,
-    fileIndex: number,
+    fileId: string,
     priority: Priority,
     signal?: AbortSignal,
   ): Promise<IndexBuild> {
     const { layout, segmentDuration, segments } = this.options;
-    const indexFile = layout.indexFile(sourceId, fileIndex);
+    const indexFile = layout.indexFile(sourceId, fileId);
 
     const saved = await readJson<MediaIndex>(indexFile);
     if (
@@ -175,8 +185,8 @@ export class AssetRegistry {
       return { index: saved };
     }
 
-    const assetKey = AssetRegistry.indexKey(sourceId, fileIndex);
-    const mediaDir = layout.mediaDir(sourceId, fileIndex);
+    const assetKey = AssetRegistry.indexKey(sourceId, fileId);
+    const mediaDir = layout.mediaDir(sourceId, fileId);
     await this.flights.run(`remove:${assetKey}`, undefined, async () => {
       await rm(mediaDir, { recursive: true, force: true });
     });
@@ -184,7 +194,7 @@ export class AssetRegistry {
 
     const { index, source } = await this.readIndex(
       sourceId,
-      fileIndex,
+      fileId,
       priority,
       signal,
     );
@@ -199,13 +209,13 @@ export class AssetRegistry {
 
   private readIndex(
     sourceId: string,
-    fileIndex: number,
+    fileId: string,
     priority: Priority,
     signal?: AbortSignal,
   ): Promise<IndexBuild> {
     const { queue, provider, segmentDuration, logger } = this.options;
 
-    const key = AssetRegistry.indexKey(sourceId, fileIndex);
+    const key = AssetRegistry.indexKey(sourceId, fileId);
 
     return this.flights.run(
       key,
@@ -214,7 +224,7 @@ export class AssetRegistry {
         queue.run({ key, priority }, ({ signal }) =>
           provider.lease(
             sourceId,
-            fileIndex,
+            fileId,
             { purpose: 'index', signal },
             async (source) => {
               if (!MATROSKA_FILE.test(source.name)) {

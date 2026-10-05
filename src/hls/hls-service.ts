@@ -44,9 +44,23 @@ export interface HlsServiceOptions {
   metadataCacheBytes?: number;
   cacheTotalBytes?: number;
   cacheSweepMs?: number;
+  /**
+   * Directories the host keeps under its own budget but wants counted toward
+   * `cacheTotalBytes`, keyed by a name used in `CacheUsage.stores`.
+   */
   hostStores?: Record<string, HostStore>;
+  /**
+   * A host directory with one subdirectory per source id. Each subdirectory
+   * counts as that source's metadata and is deleted when the source is evicted.
+   */
   hostDataDir?: string;
-  markerFile?: (sourceId: string) => string;
+  /**
+   * Prepended to the rendition URIs in a master playlist. The default, `''`,
+   * resolves them against the master's own URL, which suits a master served
+   * through `resolve(sourceId, fileId, ['master.m3u8'])`. Set it when the
+   * master is served from somewhere else.
+   */
+  masterUriPrefix?: (sourceId: string, fileId: string) => string;
   logger?: Logger;
 }
 
@@ -85,6 +99,36 @@ export interface HlsStatus {
   cache: CacheUsage;
 }
 
+/**
+ * HLS over the Matroska files of the sources a `SourceProvider` serves. Every
+ * media URL has the shape `<sourceId>/<fileId>/<parts...>`; route it to
+ * `resolve`.
+ */
+export interface HlsService {
+  /**
+   * The master playlist of `fileId`, or of the source's first Matroska file
+   * when it is omitted. Builds the index and playlists on first use.
+   */
+  master(
+    sourceId: string,
+    fileId?: string,
+    signal?: AbortSignal,
+  ): Promise<ServedFile>;
+  /** Starts rendering the opening of a file in the background. */
+  warm(sourceId: string, fileId?: string): Promise<WarmStatus>;
+  files(sourceId: string, signal?: AbortSignal): Promise<FileListing>;
+  /** Maps one media URL path to a file on disk, rendering it if needed. */
+  resolve(
+    sourceId: string,
+    fileId: string,
+    parts: string[],
+    signal?: AbortSignal,
+  ): Promise<ServedFile>;
+  status(): HlsStatus;
+  /** Stops the cache sweep and kills running ffmpeg processes. */
+  close(): void;
+}
+
 type HlsServiceDeps = {
   layout: CacheLayout;
   provider: SourceProvider;
@@ -98,12 +142,13 @@ type HlsServiceDeps = {
   warmSegments: number;
   warmConcurrency: number;
   requestTimeoutMs: number;
+  masterUriPrefix: (sourceId: string, fileId: string) => string;
   logger: Logger;
 };
 
 const MIB = 1024 * 1024;
 
-const SOURCE_ID = /^[A-Za-z0-9_-]{1,128}$/u;
+const ID = /^[A-Za-z0-9_-]{1,128}$/u;
 
 const SEGMENT_NAME = /^(\d+)\.(m4s|vtt)$/u;
 
@@ -112,16 +157,101 @@ const PLAYLIST_TYPE = 'application/vnd.apple.mpegurl';
 const PLAYLIST_CACHE = 'public, max-age=86400, immutable';
 const MEDIA_CACHE = 'public, max-age=86400, immutable';
 
-/**
- * Entry points behind the HLS routes: master playlist, warm, file list,
- * and resolving one media path to a file on disk.
- */
-export class HlsService {
+/** Creates the service: checks ffmpeg, loads the caches and starts sweeping. */
+export async function createHlsService(
+  options: HlsServiceOptions,
+): Promise<HlsService> {
+  const {
+    cacheDir,
+    provider,
+    ffmpegPath = 'ffmpeg',
+    segmentDuration = 2,
+    keepWarmS = 5,
+    warmSegments = 2,
+    warmConcurrency = 4,
+    requestTimeoutMs = 120_000,
+    maxConcurrentJobs = 64,
+    jobTimeoutMs = 180_000,
+    audioReadFromKeyframe = true,
+    segmentCacheBytes = 15_360 * MIB,
+    metadataCacheBytes = 2048 * MIB,
+    cacheTotalBytes = segmentCacheBytes + metadataCacheBytes,
+    cacheSweepMs = 300_000,
+    hostStores = {},
+    hostDataDir,
+    masterUriPrefix = () => '',
+    logger = silentLogger,
+  } = options;
+
+  try {
+    await new FfmpegSupervisor(ffmpegPath).run({ args: ['-version'] });
+  } catch (err) {
+    throw err instanceof FfmpegError
+      ? err
+      : new FfmpegError(errorMessage(err), '');
+  }
+
+  const layout = new CacheLayout(cacheDir);
+  await mkdir(layout.hlsDir, { recursive: true });
+
+  const segments = new SegmentCache(layout.hlsDir, segmentCacheBytes, logger);
+  await segments.load();
+  const remuxer = new Remuxer({
+    ffmpegPath,
+    timeoutMs: jobTimeoutMs,
+    audioReadFromKeyframe,
+    notes: new InterleavingNotes(layout, logger),
+    logger,
+  });
+  await remuxer.restoreNotes();
+  const metadata = new MetadataCache(layout, metadataCacheBytes, {
+    logger,
+    hostDataDir,
+  });
+  const queue = new TaskQueue(
+    maxConcurrentJobs,
+    keepWarmS ? Math.max(segmentDuration + 1, keepWarmS) : 0,
+    logger,
+  );
+  const guard = new DiskGuard({
+    layout,
+    stores: hostStores,
+    hostDataDir,
+    segments,
+    metadata,
+    totalBytes: cacheTotalBytes,
+    intervalMs: cacheSweepMs,
+    inUse: () => provider.active?.() ?? new Set(),
+    logger,
+  });
+
+  const service = new Service({
+    layout,
+    provider,
+    segments,
+    metadata,
+    remuxer,
+    queue,
+    guard,
+    segmentDuration,
+    keepWarm: !!keepWarmS,
+    warmSegments,
+    warmConcurrency,
+    requestTimeoutMs,
+    masterUriPrefix,
+    logger,
+  });
+  guard.start();
+
+  return service;
+}
+
+class Service implements HlsService {
   private readonly registry: AssetRegistry;
   private readonly warming: WarmQueue;
   private readonly flights = new SingleFlight();
 
-  private constructor(private readonly deps: HlsServiceDeps) {
+  constructor(private readonly deps: HlsServiceDeps) {
     this.registry = new AssetRegistry({
       layout: deps.layout,
       provider: deps.provider,
@@ -130,132 +260,38 @@ export class HlsService {
       queue: deps.queue,
       segmentDuration: deps.segmentDuration,
       warmSegments: deps.warmSegments,
+      masterUriPrefix: deps.masterUriPrefix,
       logger: deps.logger,
     });
     this.warming = new WarmQueue({
       concurrency: deps.warmConcurrency,
-      warm: (sourceId, fileIndex) => this.warmUp(sourceId, fileIndex),
+      warm: (sourceId, fileId) => this.warmUp(sourceId, fileId),
       logger: deps.logger,
     });
   }
 
-  static async create(options: HlsServiceOptions): Promise<HlsService> {
-    const {
-      cacheDir,
-      provider,
-      ffmpegPath = 'ffmpeg',
-      segmentDuration = 2,
-      keepWarmS = 5,
-      warmSegments = 2,
-      warmConcurrency = 4,
-      requestTimeoutMs = 120_000,
-      maxConcurrentJobs = 64,
-      jobTimeoutMs = 180_000,
-      audioReadFromKeyframe = true,
-      segmentCacheBytes = 15_360 * MIB,
-      metadataCacheBytes = 2048 * MIB,
-      cacheTotalBytes = segmentCacheBytes + metadataCacheBytes,
-      cacheSweepMs = 300_000,
-      hostStores = {},
-      hostDataDir,
-      markerFile,
-      logger = silentLogger,
-    } = options;
-
-    try {
-      await new FfmpegSupervisor(ffmpegPath).run({ args: ['-version'] });
-    } catch (err) {
-      throw err instanceof FfmpegError
-        ? err
-        : new FfmpegError(errorMessage(err), '');
-    }
-
-    const layout = new CacheLayout(cacheDir);
-    await mkdir(layout.hlsDir, { recursive: true });
-
-    const segments = new SegmentCache(layout.hlsDir, segmentCacheBytes, logger);
-    await segments.load();
-    const remuxer = new Remuxer({
-      ffmpegPath,
-      timeoutMs: jobTimeoutMs,
-      audioReadFromKeyframe,
-      notes: new InterleavingNotes(layout, logger),
-      logger,
-    });
-    await remuxer.restoreNotes();
-    const metadata = new MetadataCache(layout, metadataCacheBytes, {
-      logger,
-      hostDataDir,
-      markerFile,
-    });
-    const queue = new TaskQueue(
-      maxConcurrentJobs,
-      keepWarmS ? Math.max(segmentDuration + 1, keepWarmS) : 0,
-      logger,
-    );
-    const guard = new DiskGuard({
-      layout,
-      stores: hostStores,
-      hostDataDir,
-      segments,
-      metadata,
-      totalBytes: cacheTotalBytes,
-      intervalMs: cacheSweepMs,
-      inUse: () => provider.active?.() ?? new Set(),
-      logger,
-    });
-
-    const service = new HlsService({
-      layout,
-      provider,
-      segments,
-      metadata,
-      remuxer,
-      queue,
-      guard,
-      segmentDuration,
-      keepWarm: !!keepWarmS,
-      warmSegments,
-      warmConcurrency,
-      requestTimeoutMs,
-      logger,
-    });
-    guard.start();
-
-    return service;
-  }
-
   async master(
     sourceId: string,
-    fileParam?: number,
+    fileParam?: string,
     signal?: AbortSignal,
   ): Promise<ServedFile> {
-    checkSourceId(sourceId);
-    const { layout, metadata } = this.deps;
-    metadata.touch(sourceId);
-
-    const fileIndex =
-      fileParam ?? (await this.registry.defaultFileIndex(sourceId));
-    const file = layout.masterFile(sourceId, fileIndex);
-
-    if (!(await exists(file))) {
-      await this.orTimeout(
-        this.publish(sourceId, fileIndex, Priority.Foreground, signal),
-        `the playlists for ${sourceId}/${fileIndex}`,
-      );
-    }
-    this.startEagerly(sourceId, fileIndex);
-
-    return { path: file, contentType: PLAYLIST_TYPE, cacheControl: 'no-cache' };
-  }
-
-  async warm(sourceId: string, fileIndex?: number): Promise<WarmStatus> {
-    checkSourceId(sourceId);
+    checkId(sourceId, 'source');
     this.deps.metadata.touch(sourceId);
 
-    const ready = await this.alreadyWarm(sourceId, fileIndex);
-    const queued = ready ? false : this.warming.request(sourceId, fileIndex);
-    const warming = queued || this.warming.knows(sourceId, fileIndex);
+    const fileId = await this.fileOrDefault(sourceId, fileParam);
+    return this.servedMaster(sourceId, fileId, signal);
+  }
+
+  async warm(sourceId: string, fileId?: string): Promise<WarmStatus> {
+    checkId(sourceId, 'source');
+    if (fileId !== undefined) {
+      checkId(fileId, 'file');
+    }
+    this.deps.metadata.touch(sourceId);
+
+    const ready = await this.alreadyWarm(sourceId, fileId);
+    const queued = ready ? false : this.warming.request(sourceId, fileId);
+    const warming = queued || this.warming.knows(sourceId, fileId);
     return {
       ready,
       queued,
@@ -266,7 +302,7 @@ export class HlsService {
   }
 
   async files(sourceId: string, signal?: AbortSignal): Promise<FileListing> {
-    checkSourceId(sourceId);
+    checkId(sourceId, 'source');
     const { metadata, provider } = this.deps;
     metadata.touch(sourceId);
 
@@ -278,11 +314,10 @@ export class HlsService {
 
     return {
       ...info,
+      // Copies rather than mutates: a provider may hand out a cached listing.
+      // oxlint-disable-next-line oxc/no-map-spread
       files: info.files.map((file) => ({
-        index: file.index,
-        name: file.name,
-        path: file.path,
-        length: file.length,
+        ...file,
         playable: MATROSKA_FILE.test(file.name),
       })),
     };
@@ -290,13 +325,18 @@ export class HlsService {
 
   async resolve(
     sourceId: string,
-    fileIndex: number,
+    fileId: string,
     parts: string[],
     signal?: AbortSignal,
   ): Promise<ServedFile> {
-    checkSourceId(sourceId);
+    checkId(sourceId, 'source');
+    checkId(fileId, 'file');
     this.deps.provider.touch?.(sourceId);
     this.deps.metadata.touch(sourceId);
+
+    if (parts.length === 1 && parts[0] === 'master.m3u8') {
+      return this.servedMaster(sourceId, fileId, signal);
+    }
 
     // Every part of the path comes from the client. The shape is checked here
     // and the names are checked against the asset before any file is opened.
@@ -310,7 +350,7 @@ export class HlsService {
     if (!kind || !name) {
       throw new NotFoundError(`Unsupported path "${parts.join('/')}"`);
     }
-    const asset = await this.registry.get(sourceId, fileIndex);
+    const asset = await this.registry.get(sourceId, fileId);
     if (trackParam !== undefined && !/^\d+$/u.test(trackParam)) {
       throw new NotFoundError(`Invalid track "${trackParam}"`);
     }
@@ -325,7 +365,7 @@ export class HlsService {
       if (!(await exists(file))) {
         await this.orTimeout(
           asset.writePlaylists(),
-          `the playlists for ${sourceId}/${fileIndex}`,
+          `the playlists for ${sourceId}/${fileId}`,
         );
       }
       return {
@@ -414,26 +454,48 @@ export class HlsService {
     this.deps.remuxer.killAll();
   }
 
+  private async servedMaster(
+    sourceId: string,
+    fileId: string,
+    signal: AbortSignal | undefined,
+  ): Promise<ServedFile> {
+    const file = this.deps.layout.masterFile(sourceId, fileId);
+
+    if (!(await exists(file))) {
+      await this.orTimeout(
+        this.publish(sourceId, fileId, Priority.Foreground, signal),
+        `the playlists for ${sourceId}/${fileId}`,
+      );
+    }
+    this.startEagerly(sourceId, fileId);
+
+    return { path: file, contentType: PLAYLIST_TYPE, cacheControl: 'no-cache' };
+  }
+
+  private async fileOrDefault(
+    sourceId: string,
+    fileId: string | undefined,
+  ): Promise<string> {
+    const id = fileId ?? (await this.registry.defaultFileId(sourceId));
+    checkId(id, 'file');
+    return id;
+  }
+
   private async publish(
     sourceId: string,
-    fileIndex: number,
+    fileId: string,
     priority: Priority = Priority.Foreground,
     signal?: AbortSignal,
   ): Promise<Asset> {
-    const asset = await this.registry.get(
-      sourceId,
-      fileIndex,
-      priority,
-      signal,
-    );
+    const asset = await this.registry.get(sourceId, fileId, priority, signal);
     await asset.writePlaylists();
 
     return asset;
   }
 
-  private startEagerly(sourceId: string, fileIndex: number): void {
+  private startEagerly(sourceId: string, fileId: string): void {
     this.registry
-      .get(sourceId, fileIndex)
+      .get(sourceId, fileId)
       .then((asset) => {
         asset.eagerStart();
       })
@@ -442,23 +504,22 @@ export class HlsService {
 
   private async alreadyWarm(
     sourceId: string,
-    fileIndex: number | undefined,
+    fileId: string | undefined,
   ): Promise<boolean> {
-    const index = fileIndex ?? (await this.registry.defaultFileIndex(sourceId));
-    return exists(this.deps.layout.masterFile(sourceId, index));
+    const id = await this.fileOrDefault(sourceId, fileId);
+    return exists(this.deps.layout.masterFile(sourceId, id));
   }
 
   // Renders the opening of the default tracks so a later play starts without
   // waiting for indexing and remux.
   private async warmUp(
     sourceId: string,
-    fileParam: number | undefined,
+    fileParam: string | undefined,
   ): Promise<void> {
     const started = Date.now();
     this.deps.provider.warm?.(sourceId);
-    const fileIndex =
-      fileParam ?? (await this.registry.defaultFileIndex(sourceId));
-    const asset = await this.publish(sourceId, fileIndex, Priority.Background);
+    const fileId = await this.fileOrDefault(sourceId, fileParam);
+    const asset = await this.publish(sourceId, fileId, Priority.Background);
 
     const tracks = asset.openingTracks();
     for (const rendition of tracks) {
@@ -479,7 +540,7 @@ export class HlsService {
     }
     this.deps.logger.info('Warmed a title', {
       sourceId,
-      fileIndex,
+      fileId,
       name: asset.index.fileName,
       segments: last,
       ms: Date.now() - started,
@@ -503,8 +564,8 @@ export class HlsService {
   }
 }
 
-function checkSourceId(sourceId: string): void {
-  if (!SOURCE_ID.test(sourceId)) {
-    throw new NotFoundError(`Invalid source id "${sourceId}"`);
+function checkId(id: string, what: 'source' | 'file'): void {
+  if (!ID.test(id)) {
+    throw new NotFoundError(`Invalid ${what} id "${id}"`);
   }
 }

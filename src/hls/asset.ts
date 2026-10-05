@@ -33,7 +33,7 @@ const SLOW_QUEUE_WAIT_MS = 5000;
 
 export type AssetOptions = {
   sourceId: string;
-  fileIndex: number;
+  fileId: string;
   index: MediaIndex;
   layout: CacheLayout;
   provider: SourceProvider;
@@ -41,11 +41,12 @@ export type AssetOptions = {
   remuxer: Remuxer;
   queue: TaskQueue;
   warmSegments: number;
+  masterUriPrefix: (sourceId: string, fileId: string) => string;
   logger: Logger;
 };
 
 /**
- * One (sourceId, fileIndex) pair: its media index, renditions, cache
+ * One (sourceId, fileId) pair: its media index, renditions, cache
  * directories, and the work that fills them.
  */
 export class Asset {
@@ -62,8 +63,8 @@ export class Asset {
     return this.options.sourceId;
   }
 
-  get fileIndex(): number {
-    return this.options.fileIndex;
+  get fileId(): string {
+    return this.options.fileId;
   }
 
   get segmentCount(): number {
@@ -79,7 +80,7 @@ export class Asset {
   dirOf(rendition: Rendition): string {
     return this.options.layout.mediaFile(
       this.options.sourceId,
-      this.options.fileIndex,
+      this.options.fileId,
       renditionPath(rendition),
     );
   }
@@ -106,7 +107,7 @@ export class Asset {
   }
 
   writePlaylists(): Promise<void> {
-    const { layout, sourceId, fileIndex } = this.options;
+    const { layout, sourceId, fileId, masterUriPrefix } = this.options;
 
     return this.flights.run('playlists', undefined, async () => {
       for (const rendition of this.all()) {
@@ -119,8 +120,12 @@ export class Asset {
       }
 
       await writeFileAtomic(
-        layout.masterFile(sourceId, fileIndex),
-        masterPlaylist(this.index, this.renditions, `${sourceId}/${fileIndex}`),
+        layout.masterFile(sourceId, fileId),
+        masterPlaylist(
+          this.index,
+          this.renditions,
+          masterUriPrefix(sourceId, fileId),
+        ),
       );
     });
   }
@@ -234,7 +239,7 @@ export class Asset {
 
     return provider.lease(
       this.sourceId,
-      this.fileIndex,
+      this.fileId,
       { purpose: 'media', foreground: isForeground },
       async (source) => {
         if (signal.aborted) {

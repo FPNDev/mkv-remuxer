@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { dirname } from 'node:path';
 import {
   access,
+  mkdir,
   readFile,
   rename,
   rm,
@@ -25,6 +27,15 @@ export async function exists(path: string): Promise<boolean> {
 export function touchFile(path: string): void {
   const now = new Date();
   void utimes(path, now, now).catch(() => {});
+}
+
+// touchFile that creates the file on first use.
+export function markUsed(file: string): void {
+  const now = new Date();
+  void utimes(file, now, now).catch(async () => {
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, '');
+  }).catch(() => {});
 }
 
 /**

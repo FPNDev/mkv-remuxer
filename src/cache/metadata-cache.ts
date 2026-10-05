@@ -2,18 +2,17 @@ import { readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 import { errorMessage, type Logger } from '../logger.js';
-import { touchFile } from '../util/fs.js';
+import { markUsed } from '../util/fs.js';
 import { SizeLru } from '../util/lru.js';
 import { isSegmentFile, type CacheLayout } from './cache-layout.js';
 
-// The marker file's mtime carries use order across restarts. Bump it at most
+// The used marker's mtime carries use order across restarts. Bump it at most
 // this often: every touch costs a syscall.
 const MARK_INTERVAL_MS = 60_000;
 
 export type MetadataCacheOptions = {
   logger: Logger;
   hostDataDir?: string | undefined;
-  markerFile?: ((sourceId: string) => string) | undefined;
 };
 
 /**
@@ -54,9 +53,7 @@ export class MetadataCache {
       return;
     }
     this.marked.set(sourceId, now);
-    if (this.options.markerFile) {
-      touchFile(this.options.markerFile(sourceId));
-    }
+    markUsed(this.layout.usedMarker(sourceId));
   }
 
   keepOnly(present: Set<string>): void {

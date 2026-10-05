@@ -126,10 +126,10 @@ export function mediaPlaylist(index: MediaIndex, rendition: Rendition): string {
 export function masterPlaylist(
   index: MediaIndex,
   renditions: RenditionSet,
-  basePath: string,
+  uriPrefix: string,
 ): string {
   const uri = (rendition: Rendition) =>
-    `${basePath}/${renditionPath(rendition)}/index.m3u8`;
+    `${uriPrefix}${renditionPath(rendition)}/index.m3u8`;
   const lines = ['#EXTM3U', '#EXT-X-VERSION:7', '#EXT-X-INDEPENDENT-SEGMENTS'];
 
   const namesMap = new Map<string, number>();
