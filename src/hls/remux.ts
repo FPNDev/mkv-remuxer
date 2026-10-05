@@ -18,10 +18,11 @@ import {
   type VideoRendition,
 } from '../media/codecs.js';
 import {
+  AAC_FRAME_SAMPLES,
+  aacSegmentStart,
   keyframeSlice,
   secondsToTicks,
   segmentCount,
-  segmentStart,
   ticksToSeconds,
   timeSlice,
   type MediaIndex,
@@ -40,9 +41,6 @@ import {
 // frame precedes its own start still carries non-negative times.
 const TIMELINE_OFFSET_SECONDS = 10;
 
-// An AAC frame is 1024 samples. Segment boundaries snap to that grid so
-// consecutive segments neither overlap nor leave a gap.
-const AAC_FRAME_SAMPLES = 1024;
 // The encoder needs frames before the boundary to settle. They are encoded
 // and then dropped, so the segment holds only its own samples.
 const AUDIO_PAD_FRAMES = 16;
@@ -406,13 +404,11 @@ function aacPlan(
   fromKeyframe: boolean,
 ): Plan {
   const { rate, args: outputArgs } = aacOutput(rendition);
-  const toGrid = (seconds: number) =>
-    Math.round((seconds * rate) / AAC_FRAME_SAMPLES) * AAC_FRAME_SAMPLES;
   const padding = AUDIO_PAD_FRAMES * AAC_FRAME_SAMPLES;
 
   const isLast = n + 1 >= segmentCount(index);
-  const start = toGrid(segmentStart(index, n));
-  const end = isLast ? null : toGrid(segmentStart(index, n + 1));
+  const start = aacSegmentStart(index, rate, n);
+  const end = isLast ? null : aacSegmentStart(index, rate, n + 1);
   const encodeFrom = Math.max(0, start - padding);
   const encodeTo = end === null ? null : end + padding;
 

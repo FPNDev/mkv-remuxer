@@ -1,13 +1,14 @@
 import {
   aacChannels,
+  aacSampleRate,
   codecString,
   type Rendition,
   type RenditionSet,
 } from '../media/codecs.js';
 import { hevcTransferCharacteristics } from '../media/hevc.js';
 import {
+  aacSegmentStart,
   segmentCount,
-  segmentEnd,
   segmentStart,
   type MediaIndex,
 } from '../media/media-index.js';
@@ -93,9 +94,22 @@ export function segmentFileName(rendition: Rendition, n: number): string {
 }
 
 export function mediaPlaylist(index: MediaIndex, rendition: Rendition): string {
+  const count = segmentCount(index);
+  const rate =
+    rendition.type === 'audio' && rendition.transcode
+      ? aacSampleRate(rendition.track)
+      : undefined;
+  const start = (n: number) =>
+    rate === undefined
+      ? segmentStart(index, n)
+      : aacSegmentStart(index, rate, n) / rate;
+  const micros = (seconds: number) => Math.round(seconds * 1e6);
   const durations = Array.from(
-    { length: segmentCount(index) },
-    (_, n) => segmentEnd(index, n) - segmentStart(index, n),
+    { length: count },
+    (_, n) =>
+      (micros(n + 1 < count ? start(n + 1) : index.duration) -
+        micros(start(n))) /
+      1e6,
   );
 
   // Version 7 is the floor for fragmented MP4 segments and EXT-X-MAP.
@@ -114,7 +128,7 @@ export function mediaPlaylist(index: MediaIndex, rendition: Rendition): string {
   }
   for (const [n, duration] of durations.entries()) {
     lines.push(
-      `#EXTINF:${duration.toFixed(3)},`,
+      `#EXTINF:${duration.toFixed(6)},`,
       segmentFileName(rendition, +n),
     );
   }

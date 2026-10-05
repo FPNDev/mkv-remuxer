@@ -6,7 +6,7 @@ import type { MkvTrack } from '../matroska/tracks.js';
 
 // Bump when the index shape changes. A cached index of another version is
 // rebuilt from the file rather than read.
-export const MEDIA_INDEX_VERSION = 5;
+export const MEDIA_INDEX_VERSION = 6;
 
 /**
  * ts is a Matroska tick, cluster an absolute file offset, rel the block's
@@ -60,6 +60,10 @@ const TIGHT_SLACK_SECONDS = 0.1;
 // Widest element header plus the block peek: enough to identify the first
 // block of the closing cluster and stop there.
 const BOUNDARY_PEEK_BYTES = 12 + 64;
+
+// An AAC frame is 1024 samples. Segment boundaries snap to that grid so
+// consecutive segments neither overlap nor leave a gap.
+export const AAC_FRAME_SAMPLES = 1024;
 
 export async function buildMediaIndex(
   source: ByteSource,
@@ -181,10 +185,15 @@ export function segmentStart(index: MediaIndex, n: number): number {
   return n === 0 ? 0 : ticksToSeconds(index, segmentKeyframe(index, n).ts);
 }
 
-export function segmentEnd(index: MediaIndex, n: number): number {
-  return n + 1 < index.segmentStarts.length
-    ? segmentStart(index, n + 1)
-    : index.duration;
+export function aacSegmentStart(
+  index: MediaIndex,
+  rate: number,
+  n: number,
+): number {
+  return (
+    Math.round((segmentStart(index, n) * rate) / AAC_FRAME_SAMPLES) *
+    AAC_FRAME_SAMPLES
+  );
 }
 
 function segmentKeyframe(index: MediaIndex, n: number): Keyframe {

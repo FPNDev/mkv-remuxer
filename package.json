@@ -1,6 +1,6 @@
 {
   "name": "@rimjoeh/mkv-remuxer",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Remux Matroska and WebM files into HLS (fMP4 and WebVTT) on demand from any random-access byte source",
   "keywords": [
     "matroska",
@@ -25,16 +25,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    },
-    "./package.json": "./package.json"
+    }
   },
   "types": "./dist/index.d.ts",
   "directories": {
     "example": "examples"
   },
   "files": [
-    "dist",
-    "src"
+    "dist"
   ],
   "scripts": {
     "build": "tsc",
