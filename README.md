@@ -18,7 +18,7 @@ ffmpeg, job scheduling and the on-disk cache.
 ## Install
 
 ```sh
-npm install git+https://<host>/flix-mkv-remuxer.git
+npm install github:FPNDev/mkv-remuxer
 ```
 
 A local checkout works too: `npm install ../flix-mkv-remuxer`. The `prepare`

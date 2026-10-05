@@ -1,4 +1,3 @@
-import { createReadStream } from 'node:fs';
 import { Readable } from 'node:stream';
 
 /** Random-access reader over a fixed-length byte range. */
@@ -92,19 +91,4 @@ export async function readRange(
     chunks.push(asBuffer(chunk as Uint8Array));
   }
   return Buffer.concat(chunks);
-}
-
-export class LocalFileSource implements ByteSource {
-  private constructor(
-    readonly path: string,
-    readonly length: number,
-  ) {}
-
-  stream(start: number, end: number): Readable {
-    if (end <= start) {
-      return Readable.from([]);
-    }
-    // createReadStream's end is inclusive.
-    return createReadStream(this.path, { start, end: end - 1 });
-  }
 }
