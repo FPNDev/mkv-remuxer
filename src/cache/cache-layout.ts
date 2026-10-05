@@ -39,9 +39,6 @@ export class CacheLayout {
 
   // relative is a playlist URI, so its separator is always a forward slash.
   mediaFile(sourceId: string, fileId: string, relative: string): string {
-    return path.join(
-      this.mediaDir(sourceId, fileId),
-      ...relative.split('/'),
-    );
+    return path.join(this.mediaDir(sourceId, fileId), ...relative.split('/'));
   }
 }

@@ -81,9 +81,6 @@ export class WarmQueue {
 
 // An undefined fileId means the default file of the source. A colon never
 // appears in an id, so the key cannot clash with a real file.
-export function warmKey(
-  sourceId: string,
-  fileId: string | undefined,
-): string {
+export function warmKey(sourceId: string, fileId: string | undefined): string {
   return `${sourceId}/${fileId ?? ':default'}`;
 }

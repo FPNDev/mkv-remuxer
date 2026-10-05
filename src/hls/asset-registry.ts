@@ -53,11 +53,7 @@ export class AssetRegistry {
     return `index:${sourceId}/${fileId}`;
   }
 
-  static segmentKey(
-    sourceId: string,
-    fileId: string,
-    parts: string[],
-  ): string {
+  static segmentKey(sourceId: string, fileId: string, parts: string[]): string {
     return `segment:${sourceId}/${fileId}/${parts.join('/')}`;
   }
 

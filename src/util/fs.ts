@@ -32,10 +32,12 @@ export function touchFile(path: string): void {
 // touchFile that creates the file on first use.
 export function markUsed(file: string): void {
   const now = new Date();
-  void utimes(file, now, now).catch(async () => {
-    await mkdir(dirname(file), { recursive: true });
-    await writeFile(file, '');
-  }).catch(() => {});
+  void utimes(file, now, now)
+    .catch(async () => {
+      await mkdir(dirname(file), { recursive: true });
+      await writeFile(file, '');
+    })
+    .catch(() => {});
 }
 
 /**
