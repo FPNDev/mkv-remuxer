@@ -1,4 +1,4 @@
-# flix-mkv-remuxer
+# MKV & WebM remuxer [![npm version](https://img.shields.io/npm/v/@rimjoeh/mkv-remuxer.svg)](https://www.npmjs.com/package/@rimjoeh/mkv-remuxer)
 
 Turns Matroska and WebM files into HLS on demand. Video and audio are
 remuxed into fragmented MP4, subtitles into WebVTT. Nothing is transcoded,
@@ -18,16 +18,13 @@ ffmpeg, job scheduling and the on-disk cache.
 ## Install
 
 ```sh
-npm install github:FPNDev/mkv-remuxer
+npm install @rimjoeh/mkv-remuxer
 ```
-
-A local checkout works too: `npm install ../flix-mkv-remuxer`. The `prepare`
-script builds `dist/` on install.
 
 ## Usage
 
 ```ts
-import { createHlsService, type SourceProvider } from 'flix-mkv-remuxer';
+import { createHlsService, type SourceProvider } from '@rimjoeh/mkv-remuxer';
 
 const provider: SourceProvider = {
   async list(sourceId) {

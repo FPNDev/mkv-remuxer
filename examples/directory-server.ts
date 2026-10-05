@@ -23,7 +23,7 @@ import {
   UnsupportedMediaError,
   type SourceFile,
   type SourceProvider,
-} from 'flix-mkv-remuxer';
+} from '@rimjoeh/mkv-remuxer';
 
 type LocalFile = SourceFile & { path: string };
 
@@ -36,7 +36,7 @@ type LocalSource = {
 const [
   root = '.',
   port = '8080',
-  cacheDir = path.join(tmpdir(), 'flix-mkv-remuxer-example'),
+  cacheDir = path.join(tmpdir(), 'mkv-remuxer-example'),
 ] = process.argv.slice(2);
 
 // Ids end up in URLs and cache paths, so names are hashed into safe ones. A
