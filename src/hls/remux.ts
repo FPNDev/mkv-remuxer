@@ -38,7 +38,7 @@ import {
 
 // Every output timestamp is shifted by this much, so a segment whose first
 // frame precedes its own start still carries non-negative times.
-export const TIMELINE_OFFSET_SECONDS = 10;
+const TIMELINE_OFFSET_SECONDS = 10;
 
 // An AAC frame is 1024 samples. Segment boundaries snap to that grid so
 // consecutive segments neither overlap nor leave a gap.
@@ -569,5 +569,6 @@ function toHlsWebVtt(output: Buffer): string {
     .replace(/^﻿?WEBVTT[^\n]*\n?/u, '')
     .replace(/^\n+/u, '');
   const mpegTs = TIMELINE_OFFSET_SECONDS * 90000;
+
   return `WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:${mpegTs},LOCAL:00:00:00.000\n\n${body}`;
 }

@@ -131,7 +131,7 @@ export async function buildMediaIndex(
  * target seconds, taking the earlier keyframe when it lands closer to target
  * and is at least half of it. Returns indexes into keyframeTimes.
  */
-export function planSegments(
+function planSegments(
   keyframeTimes: number[],
   duration: number,
   target: number,

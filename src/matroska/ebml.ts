@@ -172,7 +172,7 @@ export function encodeId(id: number): Buffer {
   return out;
 }
 
-export function encodeSize(size: number): Buffer {
+function encodeSize(size: number): Buffer {
   let length = 1;
   // The all-ones value of each width is reserved for unknown size, so a size
   // that would hit it needs one more byte.
