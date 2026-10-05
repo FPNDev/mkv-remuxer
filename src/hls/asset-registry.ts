@@ -65,26 +65,31 @@ export class AssetRegistry {
   ): Promise<Asset> {
     const key = `${sourceId}/${fileId}`;
     const cached = this.assets.get(key);
+
     if (cached) {
       this.order.touch(key);
 
       return cached;
     }
+
     const indexKey = AssetRegistry.indexKey(sourceId, fileId);
     if (priority === Priority.Foreground) {
       this.options.queue.promote(indexKey);
     }
 
-    const existing = this.assets.get(key);
-    if (existing) {
-      return existing;
-    }
     const { index, source } = await this.indexOf(
       sourceId,
       fileId,
       priority,
       signal,
     );
+
+    // Callers waiting on the same index all resume here. The first one builds
+    // the asset; the rest must share it, or each writes the same playlists.
+    const existing = this.assets.get(key);
+    if (existing) {
+      return existing;
+    }
 
     const asset = this.build(sourceId, fileId, index);
     this.remember(key, asset);
