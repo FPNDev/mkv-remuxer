@@ -1,6 +1,6 @@
 import { createWriteStream } from 'node:fs';
 import { open, rename, rm } from 'node:fs/promises';
-import { Writable } from 'node:stream';
+import { Writable, type Transform } from 'node:stream';
 
 import type { ByteSource } from '../io/byte-source.js';
 import { errorMessage, type Logger } from '../logger.js';
@@ -261,7 +261,7 @@ export class Remuxer {
     target: RemuxTarget,
     slice: SliceTarget,
     args: string[],
-    output: Writable | Writable[],
+    output: Writable | [Transform, Writable],
   ): Promise<SliceResult> {
     const { index, source, rendition, signal } = target;
     const readable = source.stream(slice.readStart, slice.readEnd);

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import type { Writable } from 'node:stream';
+import type { Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
 export class FfmpegError extends Error {
@@ -16,7 +16,8 @@ export class FfmpegError extends Error {
 export type FfmpegRun = {
   args: string[];
   input?: AsyncIterable<Buffer> | Iterable<Buffer> | undefined;
-  output?: Writable | Writable[] | undefined;
+  /** Where stdout goes: a destination, or a transform feeding one. */
+  output?: Writable | [Transform, Writable] | undefined;
   signal?: AbortSignal | undefined;
   timeoutMs?: number | undefined;
 };
@@ -91,6 +92,7 @@ export class FfmpegSupervisor {
       kill(run.signal!.reason);
     };
     run.signal?.addEventListener('abort', onAbort, { once: true });
+
     const timer = run.timeoutMs
       ? setTimeout(() => {
           kill(
@@ -109,20 +111,21 @@ export class FfmpegSupervisor {
         }
       });
     }
-    const outputs = run.output ? [run.output].flat() : [];
-    const writing =
-      outputs.length > 0
-        ? pipeline(
-            child.stdout!,
-            ...(outputs as [Writable, ...Writable[]]),
-          ).catch((err: unknown) => {
-            outputError = err;
-            child.kill('SIGKILL');
-          })
-        : Promise.resolve();
+
+    const { output } = run;
+    const writing = output
+      ? (Array.isArray(output)
+          ? pipeline(child.stdout!, ...output)
+          : pipeline(child.stdout!, output)
+        ).catch((err: unknown) => {
+          outputError = err;
+          child.kill('SIGKILL');
+        })
+      : Promise.resolve();
 
     try {
       const [code] = await Promise.all([closed, writing]);
+
       if (failure) {
         throw failure;
       }
