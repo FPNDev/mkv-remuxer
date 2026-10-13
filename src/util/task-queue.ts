@@ -106,34 +106,36 @@ export class TaskQueue {
             .then(resolve, reject)
             .finally(() => {
               this.running.delete(running);
+              if (this.needPromotion.get(entry.key) === entry.abandonTimer) {
+                this.stopAbandonTimer(entry.key);
+              }
               this.drain();
             });
         },
       };
       if (entry.priority === Priority.Background && entry.stopIfNotPromoted) {
-        this.abandonNotPromoted(entry.key);
+        entry.abandonTimer = this.abandonNotPromoted(entry.key);
       }
       this.waiting.push(entry);
       this.drain();
     });
   }
 
-  abandonNotPromoted(key: string) {
+  private abandonNotPromoted(key: string): NodeJS.Timeout | undefined {
     if (!this.mustPromoteInS) {
       return;
     }
 
     this.stopAbandonTimer(key);
-    this.needPromotion.set(
-      key,
-      setTimeout(() => {
-        this.needPromotion.delete(key);
-        this.logger.debug(
-          `Abandoning ${key} after ${this.mustPromoteInS * 1000} - not promoted`,
-        );
-        this.abandon(key);
-      }, this.mustPromoteInS * 1000),
-    );
+    const timer = setTimeout(() => {
+      this.needPromotion.delete(key);
+      this.logger.debug(
+        `Abandoning ${key} after ${this.mustPromoteInS * 1000} - not promoted`,
+      );
+      this.abandon(key);
+    }, this.mustPromoteInS * 1000);
+    this.needPromotion.set(key, timer);
+    return timer;
   }
 
   refreshAbandonTimer(key: string) {
