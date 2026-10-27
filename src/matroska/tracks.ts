@@ -19,12 +19,17 @@ export type MkvTrack = {
   codecPrivate?: string | undefined;
   name?: string | undefined;
   language: string;
+  /** The Language element, ISO 639-2, even when language holds BCP 47. */
+  iso639Language: string;
   isDefault: boolean;
   isForced: boolean;
   isEnabled: boolean;
   defaultDurationNs?: number | undefined;
   width?: number | undefined;
   height?: number | undefined;
+  /** FlagInterlaced and FieldOrder as Matroska stores them. */
+  interlaced?: number | undefined;
+  fieldOrder?: number | undefined;
   transferCharacteristics?: number | undefined;
   sampleRate?: number | undefined;
   channels?: number | undefined;
@@ -62,6 +67,7 @@ function parseTrackEntry(buf: Uint8Array, entry: EbmlElement): MkvTrack | null {
     kind: 'video',
     codecId: '',
     language: 'eng',
+    iso639Language: 'eng',
     isDefault: true,
     isForced: false,
     isEnabled: true,
@@ -94,6 +100,7 @@ function parseTrackEntry(buf: Uint8Array, entry: EbmlElement): MkvTrack | null {
         break;
       case Id.Language:
         track.language = readString(buf, el) || 'und';
+        track.iso639Language = track.language;
         break;
       // BCP 47 wins over the older three-letter Language element when
       // both are present.
@@ -119,6 +126,12 @@ function parseTrackEntry(buf: Uint8Array, entry: EbmlElement): MkvTrack | null {
           }
           if (v.id === Id.PixelHeight) {
             track.height = readUint(buf, v);
+          }
+          if (v.id === Id.FlagInterlaced) {
+            track.interlaced = readUint(buf, v);
+          }
+          if (v.id === Id.FieldOrder) {
+            track.fieldOrder = readUint(buf, v);
           }
           if (v.id === Id.Colour) {
             const transfer = [

@@ -283,6 +283,7 @@ export async function readMatroskaLayout(
       track: cue.track,
       clusterPosition: segmentStart + cue.clusterPosition,
       relativePosition: cue.relativePosition,
+      duration: cue.duration,
     })),
   };
 }

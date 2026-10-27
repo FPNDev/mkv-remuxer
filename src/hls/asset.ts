@@ -8,6 +8,7 @@ import type { SourceProvider } from '../io/byte-source.js';
 import type { Logger } from '../logger.js';
 import {
   getRenditions,
+  isPlayable,
   type Rendition,
   type RenditionSet,
 } from '../media/codecs.js';
@@ -25,7 +26,7 @@ import {
   renditionPath,
   segmentFileName,
 } from './playlists.js';
-import type { Remuxer } from './remux.js';
+import { initNeedsPacket, type Remuxer } from './remux.js';
 
 // Past this, a player is waiting on job slots rather than on download
 // speed. It is logged, never enforced.
@@ -41,6 +42,7 @@ export type AssetOptions = {
   remuxer: Remuxer;
   queue: TaskQueue;
   warmSegments: number;
+  aacFallback: boolean;
   masterUriPrefix: (sourceId: string, fileId: string) => string;
   logger: Logger;
 };
@@ -53,10 +55,14 @@ export class Asset {
   readonly index: MediaIndex;
   readonly renditions: RenditionSet;
   private readonly flights = new SingleFlight();
+  private readonly byPath = new Map<string, Rendition>();
 
   constructor(private readonly options: AssetOptions) {
     this.index = options.index;
-    this.renditions = getRenditions(options.index);
+    this.renditions = getRenditions(options.index, options.aacFallback);
+    for (const rendition of this.all()) {
+      this.byPath.set(renditionPath(rendition), rendition);
+    }
   }
 
   get sourceId(): string {
@@ -90,19 +96,15 @@ export class Asset {
   }
 
   rendition(kind: string, track: number | undefined): Rendition {
-    const found =
-      kind === 'video'
-        ? this.renditions.video
-        : kind === 'audio'
-          ? this.renditions.audio.find((audio) => audio.track.number === track)
-          : this.renditions.subtitles.find(
-              (subtitle) => subtitle.track.number === track,
-            );
+    const found = this.byPath.get(
+      track === undefined ? kind : `${kind}/${track}`,
+    );
     if (!found) {
       throw new NotFoundError(
         `${this.index.fileName} has no ${kind} rendition for track ${track}`,
       );
     }
+
     return found;
   }
 
@@ -162,7 +164,32 @@ export class Asset {
             priority,
           },
           ({ signal: running }) => {
-            return remuxer.writeInit(this.index, rendition, file, running);
+            if (!initNeedsPacket(rendition)) {
+              return remuxer.writeInit(this.index, rendition, file, running);
+            }
+
+            return this.options.provider.lease(
+              this.sourceId,
+              this.fileId,
+              {
+                purpose: 'media',
+                foreground: priority === Priority.Foreground,
+              },
+              async (source) => {
+                try {
+                  await remuxer.writeInit(
+                    this.index,
+                    rendition,
+                    file,
+                    running,
+                    source,
+                  );
+                } catch (err) {
+                  source.release?.();
+                  throw err;
+                }
+              },
+            );
           },
         );
       },
@@ -295,9 +322,13 @@ export class Asset {
   }
 
   openingTracks(): Rendition[] {
+    const renditions = this.renditions.audio;
     const audio =
-      this.renditions.audio.find((track) => track.track.isDefault) ??
-      this.renditions.audio[0];
+      renditions.find((track) => track.track.isDefault && isPlayable(track)) ??
+      renditions.find((track) => isPlayable(track)) ??
+      renditions.find((track) => track.track.isDefault) ??
+      renditions[0];
+
     return audio ? [audio, this.renditions.video] : [this.renditions.video];
   }
 

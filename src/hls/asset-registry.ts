@@ -36,6 +36,7 @@ export type AssetRegistryOptions = {
   queue: TaskQueue;
   segmentDuration: number;
   warmSegments: number;
+  aacFallback: boolean;
   masterUriPrefix: (sourceId: string, fileId: string) => string;
   logger: Logger;
 };
@@ -119,6 +120,7 @@ export class AssetRegistry {
       remuxer,
       queue,
       warmSegments,
+      aacFallback,
       masterUriPrefix,
       logger,
     } = this.options;
@@ -133,6 +135,7 @@ export class AssetRegistry {
       remuxer,
       queue,
       warmSegments,
+      aacFallback,
       masterUriPrefix,
       logger,
     });

@@ -1,89 +1,48 @@
 import {
   aacChannels,
   aacSampleRate,
+  bcp47,
   codecString,
+  type AudioRendition,
   type Rendition,
   type RenditionSet,
+  type SubtitleRendition,
 } from '../media/codecs.js';
 import { hevcTransferCharacteristics } from '../media/hevc.js';
 import {
   aacSegmentStart,
+  copySegmentStart,
   segmentCount,
   segmentStart,
   type MediaIndex,
 } from '../media/media-index.js';
-import type { MkvTrack } from '../matroska/tracks.js';
 
 const AUDIO_GROUP = 'audio';
 const SUBTITLE_GROUP = 'subs';
 const VIDEO_RANGES: Record<number, string> = { 16: 'PQ', 18: 'HLG' };
 
-// HLS wants BCP 47 language tags. Matroska carries ISO 639-2, which has
-// both a bibliographic and a terminological code for some languages.
-const ISO_639_1: Record<string, string> = {
-  ara: 'ar',
-  bul: 'bg',
-  cat: 'ca',
-  ces: 'cs',
-  cze: 'cs',
-  chi: 'zh',
-  zho: 'zh',
-  dan: 'da',
-  deu: 'de',
-  ger: 'de',
-  ell: 'el',
-  gre: 'el',
-  eng: 'en',
-  spa: 'es',
-  est: 'et',
-  fas: 'fa',
-  per: 'fa',
-  fin: 'fi',
-  fra: 'fr',
-  fre: 'fr',
-  heb: 'he',
-  hin: 'hi',
-  hrv: 'hr',
-  hun: 'hu',
-  ind: 'id',
-  ita: 'it',
-  jpn: 'ja',
-  kat: 'ka',
-  geo: 'ka',
-  kaz: 'kk',
-  kor: 'ko',
-  lit: 'lt',
-  lav: 'lv',
-  msa: 'ms',
-  may: 'ms',
-  nld: 'nl',
-  dut: 'nl',
-  nor: 'no',
-  nob: 'nb',
-  pol: 'pl',
-  por: 'pt',
-  ron: 'ro',
-  rum: 'ro',
-  rus: 'ru',
-  slk: 'sk',
-  slo: 'sk',
-  slv: 'sl',
-  srp: 'sr',
-  swe: 'sv',
-  tha: 'th',
-  tur: 'tr',
-  ukr: 'uk',
-  vie: 'vi',
-};
-
 const languageNames = new Intl.DisplayNames(['en'], { type: 'language' });
+
+// An AAC rendition is named after its source with the format family, such
+// as "DTS-HD MA" or "DD+ Atmos", replaced by "AAC". Atmos is dropped first
+// because it can stand apart from the codec, as in "TrueHD 7.1 Atmos".
+const ATMOS = /[\s.]*(?<![\p{L}\p{N}])Atmos(?![\p{L}\p{N}])/giu;
+const FORMAT_FAMILY =
+  /(?<![\p{L}\p{N}])(?:DTS(?:[-:]?(?:HD|X|ES))?(?:[\s.-]+(?:MA|HRA|Master[\s.]Audio|High[\s.-]Res(?:olution)?(?:[\s.]Audio)?|Express))?|(?:Dolby[\s.-]*)?TrueHD|Dolby(?:[\s.-]*Digital(?:[\s.-]*Plus)?)?|DD\+|DDP|DD|E-?AC-?3|AC-?3|L?PCM|MP[123]|Vorbis|ALAC|Apple[\s.-]*Lossless|WavPack|TTA|MLP)(?![\p{L}+])/giu;
+const AAC_RUN = /AAC(?:[\s.:-]+AAC)+/gu;
+const AAC_BEFORE_DIGIT = /AAC[.\s]*(?=\d)/gu;
+
+type AudioGroup = {
+  codec: string | undefined;
+  renditions: AudioRendition[];
+};
 
 export function renditionPath(rendition: Rendition): string {
   switch (rendition.type) {
     case 'video':
       return 'video';
     case 'audio':
-      return `audio/${rendition.track.number}`;
+      return `${rendition.transcode ? 'aac' : 'audio'}/${rendition.track.number}`;
     case 'subtitle':
       return `subtitles/${rendition.track.number}`;
   }
@@ -99,10 +58,19 @@ export function mediaPlaylist(index: MediaIndex, rendition: Rendition): string {
     rendition.type === 'audio' && rendition.transcode
       ? aacSampleRate(rendition.track)
       : undefined;
-  const start = (n: number) =>
-    rate === undefined
+  const grid =
+    rendition.type === 'audio' && !rendition.transcode
+      ? index.audioGrids[rendition.track.number]
+      : undefined;
+  const start = (n: number) => {
+    if (grid) {
+      return copySegmentStart(index, grid, n) / grid.rate;
+    }
+
+    return rate === undefined
       ? segmentStart(index, n)
       : aacSegmentStart(index, rate, n) / rate;
+  };
   const micros = (seconds: number) => Math.round(seconds * 1e6);
   const durations = Array.from(
     { length: count },
@@ -148,27 +116,43 @@ export function masterPlaylist(
 
   const namesMap = new Map<string, number>();
 
-  // At most one member of an audio group may be DEFAULT.
-  const defaultAudio =
-    renditions.audio.find((audio) => audio.track.isDefault) ??
-    renditions.audio[0];
-
+  // One group and variant per audio codec: clients such as Shaka take a
+  // variant's CODECS to hold for every rendition in its audio group.
+  const audioGroups = new Map<string, AudioGroup>();
   for (const audio of renditions.audio) {
-    const channels = audio.transcode
-      ? aacChannels(audio.track)
-      : (audio.track.channels ?? 2);
-    lines.push(
-      `#EXT-X-MEDIA:${attributes({
-        TYPE: 'AUDIO',
-        'GROUP-ID': quoted(AUDIO_GROUP),
-        NAME: quoted(uniqueLabel(audio.track, namesMap)),
-        LANGUAGE: optionalQuoted(bcp47(audio.track.language)),
-        DEFAULT: audio === defaultAudio ? 'YES' : 'NO',
-        AUTOSELECT: 'YES',
-        CHANNELS: quoted(String(channels)),
-        URI: quoted(uri(audio)),
-      })}`,
-    );
+    const codec = codecString(audio);
+    const id = codec ? `${AUDIO_GROUP}-${codec}` : AUDIO_GROUP;
+    const group = audioGroups.get(id);
+    if (group) {
+      group.renditions.push(audio);
+    } else {
+      audioGroups.set(id, { codec, renditions: [audio] });
+    }
+  }
+
+  for (const [id, group] of audioGroups) {
+    // At most one member of an audio group may be DEFAULT.
+    const defaultAudio =
+      group.renditions.find((audio) => audio.track.isDefault) ??
+      group.renditions[0];
+
+    for (const audio of group.renditions) {
+      const channels = audio.transcode
+        ? aacChannels(audio.track)
+        : (audio.track.channels ?? 2);
+      lines.push(
+        `#EXT-X-MEDIA:${attributes({
+          TYPE: 'AUDIO',
+          'GROUP-ID': quoted(id),
+          NAME: quoted(uniqueLabel(audio, namesMap)),
+          LANGUAGE: optionalQuoted(bcp47(audio.track.language)),
+          DEFAULT: audio === defaultAudio ? 'YES' : 'NO',
+          AUTOSELECT: 'YES',
+          CHANNELS: quoted(String(channels)),
+          URI: quoted(uri(audio)),
+        })}`,
+      );
+    }
   }
 
   namesMap.clear();
@@ -178,7 +162,7 @@ export function masterPlaylist(
       `#EXT-X-MEDIA:${attributes({
         TYPE: 'SUBTITLES',
         'GROUP-ID': quoted(SUBTITLE_GROUP),
-        NAME: quoted(uniqueLabel(subtitle.track, namesMap)),
+        NAME: quoted(uniqueLabel(subtitle, namesMap)),
         LANGUAGE: optionalQuoted(bcp47(subtitle.track.language)),
         DEFAULT: 'NO',
         AUTOSELECT: 'YES',
@@ -189,17 +173,16 @@ export function masterPlaylist(
   }
 
   const { track } = renditions.video;
-  const codecs = [renditions.video, ...renditions.audio].map((rendition) =>
-    codecString(rendition),
-  );
+  const videoCodec = codecString(renditions.video);
   const averageBandwidth = Math.round((index.fileLength * 8) / index.duration);
+  // The track header's frame duration is a fallback only: some files state a
+  // rate their packets do not run at.
+  const frameRate =
+    index.frameRate ??
+    (track.defaultDurationNs ? 1e9 / track.defaultDurationNs : undefined);
   const variant = {
     BANDWIDTH: String(Math.round(averageBandwidth * 1.5)),
     'AVERAGE-BANDWIDTH': String(averageBandwidth),
-    CODECS: codecs.every(Boolean)
-      ? quoted([...new Set(codecs)].join(','))
-      : undefined,
-    AUDIO: renditions.audio.length > 0 ? quoted(AUDIO_GROUP) : undefined,
     SUBTITLES:
       renditions.subtitles.length > 0 ? quoted(SUBTITLE_GROUP) : undefined,
     'CLOSED-CAPTIONS': 'NONE',
@@ -207,9 +190,7 @@ export function masterPlaylist(
       track.width && track.height
         ? `${track.width}x${track.height}`
         : undefined,
-    'FRAME-RATE': track.defaultDurationNs
-      ? (1e9 / track.defaultDurationNs).toFixed(3)
-      : undefined,
+    'FRAME-RATE': frameRate?.toFixed(3),
   };
   // Firefox's MediaCapabilities rejects every av01 codec string paired with
   // a PQ or HLG transfer function, but runs no such check on HEVC strings.
@@ -218,21 +199,38 @@ export function masterPlaylist(
       ? VIDEO_RANGES[hevcTransferCharacteristics(track)]
       : undefined;
 
-  lines.push(
-    `#EXT-X-STREAM-INF:${attributes({
+  const pushVariants = (
+    audioGroupId: string | undefined,
+    codecs: (string | undefined)[],
+  ) => {
+    const audioVariant = {
       ...variant,
-      'VIDEO-RANGE': videoRange,
-    })}`,
-    uri(renditions.video),
-  );
-  if (videoRange) {
+      CODECS: codecs.every(Boolean) ? quoted(codecs.join(',')) : undefined,
+      AUDIO: audioGroupId === undefined ? undefined : quoted(audioGroupId),
+    };
     lines.push(
       `#EXT-X-STREAM-INF:${attributes({
-        ...variant,
-        'VIDEO-RANGE': 'SDR',
+        ...audioVariant,
+        'VIDEO-RANGE': videoRange,
       })}`,
-      `${uri(renditions.video)}?range=sdr`,
+      uri(renditions.video),
     );
+    if (videoRange) {
+      lines.push(
+        `#EXT-X-STREAM-INF:${attributes({
+          ...audioVariant,
+          'VIDEO-RANGE': 'SDR',
+        })}`,
+        `${uri(renditions.video)}?range=sdr`,
+      );
+    }
+  };
+
+  if (audioGroups.size === 0) {
+    pushVariants(undefined, [videoCodec]);
+  }
+  for (const [id, group] of audioGroups) {
+    pushVariants(id, [videoCodec, group.codec]);
   }
 
   return `${lines.join('\n')}\n`;
@@ -259,14 +257,11 @@ function optionalQuoted(value: string | undefined): string | undefined {
   return value === undefined ? undefined : quoted(value);
 }
 
-function bcp47(language: string): string | undefined {
-  if (!language || language === 'und') {
-    return undefined;
-  }
-  return ISO_639_1[language.toLowerCase()] ?? language;
-}
-
-function uniqueLabel(track: MkvTrack, used: Map<string, number>): string {
+function uniqueLabel(
+  rendition: AudioRendition | SubtitleRendition,
+  used: Map<string, number>,
+): string {
+  const { track } = rendition;
   const language = bcp47(track.language);
   let label = track.name;
   if (!label && language) {
@@ -277,6 +272,9 @@ function uniqueLabel(track: MkvTrack, used: Map<string, number>): string {
     }
   }
   label ??= `Unknown`;
+  if (rendition.type === 'audio' && rendition.transcode) {
+    label = aacName(label);
+  }
 
   const usedTimes = (used.get(label) ?? 0) + 1;
   if (usedTimes > 1) {
@@ -285,4 +283,16 @@ function uniqueLabel(track: MkvTrack, used: Map<string, number>): string {
   used.set(label, usedTimes);
 
   return label;
+}
+
+// A label with no format token keeps its words and gains " AAC".
+function aacName(label: string): string {
+  const stripped = label.replace(ATMOS, '');
+  const renamed = stripped.replace(FORMAT_FAMILY, 'AAC');
+  const name =
+    renamed === stripped
+      ? `${stripped} AAC`
+      : renamed.replace(AAC_RUN, 'AAC').replace(AAC_BEFORE_DIGIT, 'AAC ');
+
+  return name.replaceAll(/\s+/gu, ' ').trim();
 }

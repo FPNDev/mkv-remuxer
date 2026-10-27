@@ -8,6 +8,8 @@ export type CuePoint = {
   // Offset of the block inside its cluster. Optional in the format and often
   // missing.
   relativePosition: number | undefined;
+  // How long the block plays, in ticks. Muxers give it for subtitles.
+  duration: number | undefined;
 };
 
 /**
@@ -40,6 +42,7 @@ export function parseCues(buf: Uint8Array, cues: EbmlElement): CuePoint[] {
       let track: number | undefined;
       let clusterPosition: number | undefined;
       let relativePosition: number | undefined;
+      let duration: number | undefined;
       for (const el of childElements(buf, pos.dataStart, pos.dataEnd)) {
         if (el.id === Id.CueTrack) {
           track = readUint(buf, el);
@@ -50,9 +53,18 @@ export function parseCues(buf: Uint8Array, cues: EbmlElement): CuePoint[] {
         if (el.id === Id.CueRelativePosition) {
           relativePosition = readUint(buf, el);
         }
+        if (el.id === Id.CueDuration) {
+          duration = readUint(buf, el);
+        }
       }
       if (track !== undefined && clusterPosition !== undefined) {
-        result.push({ time, track, clusterPosition, relativePosition });
+        result.push({
+          time,
+          track,
+          clusterPosition,
+          relativePosition,
+          duration,
+        });
       }
     }
   }

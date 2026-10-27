@@ -25,7 +25,7 @@ import type { Asset } from './asset.js';
 import { AssetRegistry, MATROSKA_FILE } from './asset-registry.js';
 import { FfmpegError, FfmpegSupervisor } from './ffmpeg.js';
 import { renditionPath, segmentFileName } from './playlists.js';
-import { Remuxer } from './remux.js';
+import { Remuxer, type AacCoder } from './remux.js';
 import { WarmQueue } from './warm-queue.js';
 
 export interface HlsServiceOptions {
@@ -40,6 +40,8 @@ export interface HlsServiceOptions {
   maxConcurrentJobs?: number;
   jobTimeoutMs?: number;
   audioReadFromKeyframe?: boolean;
+  aacFallback?: boolean;
+  aacCoder?: AacCoder;
   segmentCacheBytes?: number;
   metadataCacheBytes?: number;
   cacheTotalBytes?: number;
@@ -142,6 +144,7 @@ type HlsServiceDeps = {
   warmSegments: number;
   warmConcurrency: number;
   requestTimeoutMs: number;
+  aacFallback: boolean;
   masterUriPrefix: (sourceId: string, fileId: string) => string;
   logger: Logger;
 };
@@ -173,6 +176,8 @@ export async function createHlsService(
     maxConcurrentJobs = 64,
     jobTimeoutMs = 180_000,
     audioReadFromKeyframe = true,
+    aacFallback = false,
+    aacCoder = 'fast',
     segmentCacheBytes = 15_360 * MIB,
     metadataCacheBytes = 2048 * MIB,
     cacheTotalBytes = segmentCacheBytes + metadataCacheBytes,
@@ -200,6 +205,7 @@ export async function createHlsService(
     ffmpegPath,
     timeoutMs: jobTimeoutMs,
     audioReadFromKeyframe,
+    aacCoder,
     notes: new InterleavingNotes(layout, logger),
     logger,
   });
@@ -238,6 +244,7 @@ export async function createHlsService(
     warmSegments,
     warmConcurrency,
     requestTimeoutMs,
+    aacFallback,
     masterUriPrefix,
     logger,
   });
@@ -260,6 +267,7 @@ class Service implements HlsService {
       queue: deps.queue,
       segmentDuration: deps.segmentDuration,
       warmSegments: deps.warmSegments,
+      aacFallback: deps.aacFallback,
       masterUriPrefix: deps.masterUriPrefix,
       logger: deps.logger,
     });
@@ -346,7 +354,8 @@ class Service implements HlsService {
     const [trackParam, name] =
       kind === 'video' && rest.length === 1
         ? [undefined, rest[0]]
-        : (kind === 'audio' || kind === 'subtitles') && rest.length === 2
+        : (kind === 'audio' || kind === 'aac' || kind === 'subtitles') &&
+            rest.length === 2
           ? rest
           : [];
     if (!kind || !name) {

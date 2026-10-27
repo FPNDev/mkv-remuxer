@@ -146,56 +146,243 @@ function findBox(buf: Buffer, path: string[]): Box {
     }
     box = found;
   }
+
   return box;
 }
 
 export function trackTimescale(init: Buffer): number {
   const { start } = findBox(init, ['moov', 'trak', 'mdia', 'mdhd']);
+
   return init.readUInt32BE(start + (init[start] === 1 ? 20 : 12));
 }
 
-export function retimeFragment(moof: Buffer, pts: number[]): void {
-  const trun = findBox(moof, ['moof', 'traf', 'trun']).start;
-  const version = moof[trun];
-  const flags = moof.readUIntBE(trun + 1, 3);
-  // Without per-sample durations every frame has the same length, so ffmpeg
-  // repaired no timestamps and the fragment is already right.
-  if (!(flags & 0x800) || !(flags & 0x100)) {
-    return;
+// The child boxes of a visual sample entry follow 78 bytes of its own fields.
+const VISUAL_ENTRY_FIELDS = 78;
+
+/**
+ * Appends a `type` box to the first sample entry of a video init segment,
+ * unless the entry already has one.
+ */
+export function addSampleEntryBox(
+  init: Buffer,
+  type: string,
+  payload: Buffer,
+): Buffer {
+  const path = ['moov', 'trak', 'mdia', 'minf', 'stbl', 'stsd'];
+  const headers: number[] = [];
+  for (const i of path.keys()) {
+    headers.push(findBox(init, path.slice(0, i + 1)).start - 8);
   }
-  const count = moof.readUInt32BE(trun + 4);
-  if (count !== pts.length) {
-    throw new Error(
-      `Fragment has ${count} samples but ${pts.length} timestamps`,
-    );
+  // Past the stsd header, its version and flags, and its entry count.
+  const entry = headers.at(-1)! + 16;
+  const entryEnd = entry + init.readUInt32BE(entry);
+  let pos = entry + 8 + VISUAL_ENTRY_FIELDS;
+  while (pos + 8 <= entryEnd) {
+    if (init.toString('latin1', pos + 4, pos + 8) === type) {
+      return init;
+    }
+    const size = init.readUInt32BE(pos);
+    if (size < 8) {
+      break;
+    }
+    pos += size;
   }
 
-  const sorted = pts.toSorted((a, b) => a - b);
-  let shift = 0;
-  for (const [i, value] of pts.entries()) {
-    shift = Math.max(shift, sorted[i]! - value);
+  const added = box(type, payload);
+  const out = Buffer.concat([
+    init.subarray(0, entryEnd),
+    added,
+    init.subarray(entryEnd),
+  ]);
+  headers.push(entry);
+  for (const header of headers) {
+    out.writeUInt32BE(out.readUInt32BE(header) + added.length, header);
   }
-  const dts = sorted.map((value) => value - shift);
+
+  return out;
+}
+
+/**
+ * One sample of a fragment. dts and duration are in the track timescale;
+ * compositionOffset is the presentation time minus dts.
+ */
+export type FragmentSample = {
+  dts: number;
+  duration: number;
+  flags: number;
+  data: Buffer;
+  compositionOffset?: number;
+};
+
+/** The samples of every fragment in `buf`. */
+export function readFragments(buf: Buffer): FragmentSample[] {
+  const samples: FragmentSample[] = [];
+  let pos = 0;
+  while (pos + 8 <= buf.length) {
+    const size = buf.readUInt32BE(pos);
+    if (size < 8) {
+      break;
+    }
+    if (buf.toString('latin1', pos + 4, pos + 8) === 'moof') {
+      readMoof(buf, pos, buf.subarray(pos, pos + size), samples);
+    }
+    pos += size;
+  }
+
+  return samples;
+}
+
+function readMoof(
+  buf: Buffer,
+  moofStart: number,
+  moof: Buffer,
+  samples: FragmentSample[],
+): void {
+  const tfhd = findBox(moof, ['moof', 'traf', 'tfhd']).start;
+  const tfhdFlags = moof.readUIntBE(tfhd + 1, 3);
+  let at = tfhd + 8;
+  let base = moofStart;
+  if (tfhdFlags & 0x1) {
+    base = Number(moof.readBigUInt64BE(at));
+    at += 8;
+  }
+  if (tfhdFlags & 0x2) {
+    at += 4;
+  }
+  let defaultDuration = 0;
+  let defaultSize = 0;
+  let defaultFlags = 0;
+  if (tfhdFlags & 0x8) {
+    defaultDuration = moof.readUInt32BE(at);
+    at += 4;
+  }
+  if (tfhdFlags & 0x10) {
+    defaultSize = moof.readUInt32BE(at);
+    at += 4;
+  }
+  if (tfhdFlags & 0x20) {
+    defaultFlags = moof.readUInt32BE(at);
+  }
 
   const tfdt = findBox(moof, ['moof', 'traf', 'tfdt']).start;
-  if (moof[tfdt] === 1) {
-    moof.writeBigUInt64BE(BigInt(dts[0]!), tfdt + 4);
-  } else {
-    moof.writeUInt32BE(dts[0]!, tfdt + 4);
-  }
+  let dts =
+    moof[tfdt] === 1
+      ? Number(moof.readBigUInt64BE(tfdt + 4))
+      : moof.readUInt32BE(tfdt + 4);
 
-  let pos = trun + 8 + (flags & 0x1 ? 4 : 0) + (flags & 0x4 ? 4 : 0);
-  for (const [i, value] of pts.entries()) {
-    const next = dts[i + 1];
-    if (next !== undefined) {
-      moof.writeUInt32BE(next - dts[i]!, pos);
-    }
-    pos += 4 + (flags & 0x200 ? 4 : 0) + (flags & 0x400 ? 4 : 0);
-    if (version === 1) {
-      moof.writeInt32BE(value - dts[i]!, pos);
-    } else {
-      moof.writeUInt32BE(value - dts[i]!, pos);
-    }
-    pos += 4;
+  const trun = findBox(moof, ['moof', 'traf', 'trun']).start;
+  const flags = moof.readUIntBE(trun + 1, 3);
+  const count = moof.readUInt32BE(trun + 4);
+  at = trun + 8;
+  let offset = base;
+  if (flags & 0x1) {
+    offset += moof.readInt32BE(at);
+    at += 4;
   }
+  let firstFlags: number | undefined;
+  if (flags & 0x4) {
+    firstFlags = moof.readUInt32BE(at);
+    at += 4;
+  }
+  for (let i = 0; i < count; i++) {
+    let duration = defaultDuration;
+    let size = defaultSize;
+    let sampleFlags = i === 0 ? (firstFlags ?? defaultFlags) : defaultFlags;
+    if (flags & 0x100) {
+      duration = moof.readUInt32BE(at);
+      at += 4;
+    }
+    if (flags & 0x200) {
+      size = moof.readUInt32BE(at);
+      at += 4;
+    }
+    if (flags & 0x400) {
+      sampleFlags = moof.readUInt32BE(at);
+      at += 4;
+    }
+    if (flags & 0x800) {
+      at += 4;
+    }
+    samples.push({
+      dts,
+      duration,
+      flags: sampleFlags,
+      data: buf.subarray(offset, offset + size),
+    });
+    offset += size;
+    dts += duration;
+  }
+}
+
+// ffmpeg numbers the only track of its output 1.
+const TRACK_ID = 1;
+
+/**
+ * A moof and mdat holding `samples`, the first one decoded at baseTime.
+ * Composition offsets, when the samples carry them, are written signed.
+ */
+export function writeFragment(
+  baseTime: number,
+  samples: FragmentSample[],
+): Buffer {
+  const offsets = samples.some(
+    (sample) => sample.compositionOffset !== undefined,
+  );
+  const entrySize = offsets ? 16 : 12;
+  const entries = Buffer.alloc(samples.length * entrySize);
+  const mdat: Buffer[] = [Buffer.alloc(8)];
+  let mdatSize = 8;
+  for (const [i, sample] of samples.entries()) {
+    const at = i * entrySize;
+    entries.writeUInt32BE(sample.duration, at);
+    entries.writeUInt32BE(sample.data.length, at + 4);
+    entries.writeUInt32BE(sample.flags >>> 0, at + 8);
+    if (offsets) {
+      entries.writeInt32BE(sample.compositionOffset ?? 0, at + 12);
+    }
+    mdat.push(sample.data);
+    mdatSize += sample.data.length;
+  }
+  const tfdt = Buffer.alloc(12);
+  tfdt.writeUInt32BE(0x01000000);
+  tfdt.writeBigUInt64BE(BigInt(baseTime), 4);
+  // The data offset is filled in once the moof size is known.
+  const trun = Buffer.alloc(12);
+  trun.writeUInt32BE(offsets ? 0x01000f01 : 0x000701);
+  trun.writeUInt32BE(samples.length, 4);
+  const moof = box(
+    'moof',
+    box('mfhd', uint32(0), uint32(1)),
+    box(
+      'traf',
+      box('tfhd', uint32(0x020000), uint32(TRACK_ID)),
+      box('tfdt', tfdt),
+      box('trun', trun, entries),
+    ),
+  );
+  moof.writeUInt32BE(moof.length + 8, moof.length - entries.length - 4);
+
+  mdat[0]!.writeUInt32BE(mdatSize);
+  mdat[0]!.write('mdat', 4, 'latin1');
+
+  return Buffer.concat([moof, ...mdat]);
+}
+
+function box(type: string, ...payload: Buffer[]): Buffer {
+  const header = Buffer.alloc(8);
+  let size = 8;
+  for (const part of payload) {
+    size += part.length;
+  }
+  header.writeUInt32BE(size);
+  header.write(type, 4, 'latin1');
+
+  return Buffer.concat([header, ...payload]);
+}
+
+function uint32(value: number): Buffer {
+  const buf = Buffer.alloc(4);
+  buf.writeUInt32BE(value);
+
+  return buf;
 }

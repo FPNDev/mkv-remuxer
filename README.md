@@ -1,9 +1,21 @@
 # MKV & WebM remuxer [![npm version](https://img.shields.io/npm/v/@rimjoeh/mkv-remuxer.svg)](https://www.npmjs.com/package/@rimjoeh/mkv-remuxer)
 
 Turns Matroska and WebM files into HLS on demand. Video and audio are
-remuxed into fragmented MP4, subtitles into WebVTT. Nothing is transcoded,
-and only the byte ranges a player asks for are read, so playback can start
-before the whole file is available.
+remuxed into fragmented MP4, subtitles into WebVTT. Video is never
+transcoded: it keeps every packet and attribute, each frame lasts until the
+next one is shown, and the last frame of a segment until the next segment
+starts, so the video timeline has no holes. A subtitle cue appears in every
+segment it is on screen in, when the file's Cues index gives its position
+and duration. AAC, Opus, FLAC, MP3, AC-3, E-AC-3, DTS and TrueHD audio is
+copied; with `aacFallback`, each language whose best track Chrome and
+Firefox can't play also gets one AAC rendition. AAC keeps the source's
+channel count, layout and sample rate where the encoder allows them (up to
+eight channels, 7350 to 96000 Hz), else takes the nearest, and gaps in the
+source become silence. Copied audio keeps every source packet byte for byte
+on its own frame grid, and fills gaps with silent frames of the same codec.
+Only the byte ranges a
+player asks for are read, so playback can start before the whole file is
+available.
 
 The library never opens files or network connections itself. The host hands
 it a `SourceProvider`, which supplies random-access bytes for each source, and
@@ -65,6 +77,7 @@ Every URL the library produces has the shape `<sourceId>/<fileId>/...`, and
 | `<sourceId>/<fileId>/master.m3u8`                 | Master playlist      |
 | `<sourceId>/<fileId>/video/index.m3u8`            | Video media playlist |
 | `<sourceId>/<fileId>/audio/<track>/init.mp4`      | Audio init segment   |
+| `<sourceId>/<fileId>/aac/<track>/init.mp4`        | AAC rendition init   |
 | `<sourceId>/<fileId>/subtitles/<track>/00003.vtt` | Subtitle segment     |
 
 Rendition URIs in the master are relative to the master's own URL. A host
@@ -148,6 +161,8 @@ A `LeasedSource` is a `ByteSource` with a `name` plus optional hooks:
 | `maxConcurrentJobs`     | `64`                 | Remux jobs running at once.                                                                                                                                                       |
 | `jobTimeoutMs`          | `180000`             | Longest run of one ffmpeg process.                                                                                                                                                |
 | `audioReadFromKeyframe` | `true`               | Read audio from the preceding video keyframe, which suits files with loosely interleaved tracks.                                                                                  |
+| `aacFallback`           | `false`              | Per language, one AAC rendition of the best track Chrome and Firefox can't play, unless a playable track has as many channels. Uncopyable audio (PCM etc.) needs it.              |
+| `aacCoder`              | `'fast'`             | Encoder coder for every AAC rendition: `'fast'` or `'twoloop'`, which sounds a little better at about twice the CPU time.                                                         |
 | `segmentCacheBytes`     | 15 GiB               | Budget for rendered segments.                                                                                                                                                     |
 | `metadataCacheBytes`    | 2 GiB                | Budget for indexes and playlists.                                                                                                                                                 |
 | `cacheTotalBytes`       | sum of the two above | Budget for everything under `cacheDir`, host stores included.                                                                                                                     |
