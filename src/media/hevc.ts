@@ -18,6 +18,7 @@ class BitReader {
       value = value * 2 + ((byte >> (7 - (this.position & 7))) & 1);
       this.position++;
     }
+
     return value;
   }
 
@@ -26,6 +27,7 @@ class BitReader {
     while (this.bits(1) === 0) {
       zeros++;
     }
+
     return 2 ** zeros - 1 + this.bits(zeros);
   }
 }
@@ -71,6 +73,7 @@ function firstSps(hvcC: Buffer): Buffer | undefined {
       offset += length;
     }
   }
+
   return undefined;
 }
 
@@ -199,5 +202,6 @@ function spsTransferCharacteristics(sps: Buffer): number {
     return UNSPECIFIED;
   }
   r.bits(8);
+
   return r.bits(8);
 }

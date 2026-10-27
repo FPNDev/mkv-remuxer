@@ -135,6 +135,7 @@ export class TaskQueue {
       this.abandon(key);
     }, this.mustPromoteInS * 1000);
     this.needPromotion.set(key, timer);
+
     return timer;
   }
 
@@ -194,6 +195,7 @@ export class TaskQueue {
         );
       }
     }
+
     return abandonedTasks;
   }
 
@@ -278,6 +280,7 @@ export class TaskQueue {
         count++;
       }
     }
+
     return count;
   }
 
@@ -306,6 +309,7 @@ export class TaskQueue {
         bestScore = entryScore;
       }
     }
+
     return best;
   }
 }

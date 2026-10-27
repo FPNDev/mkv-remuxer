@@ -187,8 +187,10 @@ const hex = (byte: number, width = 2) =>
 function aacObjectType(codecId: string, asc: Buffer | undefined): number {
   if (asc && asc.length >= 2) {
     const type = asc[0]! >> 3;
+
     return type === 31 ? 32 + (((asc[0]! & 0x07) << 3) | (asc[1]! >> 5)) : type;
   }
+
   return codecId.includes('SBR') ? 5 : 2;
 }
 
@@ -197,6 +199,7 @@ function avcCodecString(avcC: Buffer): string | undefined {
   if (avcC.length < 4 || avcC[0] !== 1) {
     return undefined;
   }
+
   return `avc1.${hex(avcC[1]!)}${hex(avcC[2]!)}${hex(avcC[3]!)}`;
 }
 

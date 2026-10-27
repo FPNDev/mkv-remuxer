@@ -481,6 +481,7 @@ function keyframeAudioSlice(
       break;
     }
   }
+
   return {
     ...tight,
     readStart: keyframe ? keyframe.cluster : index.firstClusterOffset,

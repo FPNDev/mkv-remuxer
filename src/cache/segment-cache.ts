@@ -89,6 +89,7 @@ export class SegmentCache {
     for (const file of this.lru.trimTo(Math.max(0, before - bytes))) {
       await rm(file, { force: true }).catch(() => {});
     }
+
     return before - this.lru.size;
   }
 

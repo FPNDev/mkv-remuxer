@@ -57,6 +57,7 @@ export class SizeLru<K> {
     }
     this.entries.delete(key);
     this.totalBytes -= entry.bytes;
+
     return true;
   }
 
@@ -68,6 +69,7 @@ export class SizeLru<K> {
         return { key, bytes: entry.bytes, usedAt: entry.usedAt };
       }
     }
+
     return undefined;
   }
 
@@ -92,6 +94,7 @@ export class SizeLru<K> {
       this.totalBytes -= entry.bytes;
       removed.push(key);
     }
+
     return removed;
   }
 }

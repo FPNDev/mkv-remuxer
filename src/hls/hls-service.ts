@@ -279,6 +279,7 @@ class Service implements HlsService {
     this.deps.metadata.touch(sourceId);
 
     const fileId = await this.fileOrDefault(sourceId, fileParam);
+
     return this.servedMaster(sourceId, fileId, signal);
   }
 
@@ -292,6 +293,7 @@ class Service implements HlsService {
     const ready = await this.alreadyWarm(sourceId, fileId);
     const queued = ready ? false : this.warming.request(sourceId, fileId);
     const warming = queued || this.warming.knows(sourceId, fileId);
+
     return {
       ready,
       queued,
@@ -368,6 +370,7 @@ class Service implements HlsService {
           `the playlists for ${sourceId}/${fileId}`,
         );
       }
+
       return {
         path: file,
         contentType: PLAYLIST_TYPE,
@@ -380,6 +383,7 @@ class Service implements HlsService {
         asset.ensureInit(rendition, file, Priority.Foreground, signal),
         `the init section of ${renditionPath(rendition)}`,
       );
+
       return {
         path: file,
         contentType: mediaType,
@@ -478,6 +482,7 @@ class Service implements HlsService {
   ): Promise<string> {
     const id = fileId ?? (await this.registry.defaultFileId(sourceId));
     checkId(id, 'file');
+
     return id;
   }
 
@@ -507,6 +512,7 @@ class Service implements HlsService {
     fileId: string | undefined,
   ): Promise<boolean> {
     const id = await this.fileOrDefault(sourceId, fileId);
+
     return exists(this.deps.layout.masterFile(sourceId, id));
   }
 
@@ -557,6 +563,7 @@ class Service implements HlsService {
         seconds,
         jobs: this.deps.queue.stats,
       });
+
       return new MediaTimeoutError(
         `Timed out after ${seconds}s producing ${what}`,
       );

@@ -93,6 +93,7 @@ export function readVint(
   for (let i = 1; i < length; i++) {
     value = value * 256 + buf[pos + i]!;
   }
+
   return { value, length };
 }
 
@@ -126,6 +127,7 @@ export function readUint(buf: Uint8Array, el: EbmlElement): number {
   for (let i = el.dataStart; i < el.dataEnd; i++) {
     value = value * 256 + buf[i]!;
   }
+
   return value;
 }
 
@@ -136,6 +138,7 @@ export function readBigUint(buf: Uint8Array, el: EbmlElement): string {
   for (let i = el.dataStart; i < el.dataEnd; i++) {
     value = (value << 8n) | BigInt(buf[i]!);
   }
+
   return value.toString();
 }
 
@@ -169,6 +172,7 @@ export function encodeId(id: number): Buffer {
   const length = id >= 0x1000000 ? 4 : id >= 0x10000 ? 3 : id >= 0x100 ? 2 : 1;
   const out = Buffer.alloc(length);
   out.writeUIntBE(id, 0, length);
+
   return out;
 }
 
@@ -187,6 +191,7 @@ function encodeSize(size: number): Buffer {
     rest = Math.floor(rest / 256);
   }
   out[0] = out[0]! | (0x80 >> (length - 1));
+
   return out;
 }
 
@@ -197,6 +202,7 @@ export function encodeUint(value: number): Buffer {
     bytes.unshift(rest % 256);
     rest = Math.floor(rest / 256);
   } while (rest > 0);
+
   return Buffer.from(bytes);
 }
 

@@ -51,6 +51,7 @@ export function parseTracks(buf: Uint8Array, tracks: EbmlElement): MkvTrack[] {
       result.push(track);
     }
   }
+
   return result;
 }
 
@@ -154,5 +155,6 @@ function parseTrackEntry(buf: Uint8Array, entry: EbmlElement): MkvTrack | null {
   if (bcp47) {
     track.language = bcp47;
   }
+
   return track;
 }

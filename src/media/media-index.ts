@@ -281,5 +281,6 @@ function nextClusterAfter(index: MediaIndex, k: number): number {
       return Math.min(index.mediaEnd, next);
     }
   }
+
   return index.mediaEnd;
 }

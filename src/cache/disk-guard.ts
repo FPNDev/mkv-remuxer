@@ -165,11 +165,13 @@ export class DiskGuard {
         sweptAt: Date.now(),
       };
       logger.debug('Cache swept', { ...this.usage });
+
       return this.usage;
     } catch (err: unknown) {
       this.options.logger.warn('Could not sweep the cache', {
         error: errorMessage(err),
       });
+
       return this.usage;
     } finally {
       this.sweeping = false;
@@ -251,6 +253,7 @@ export class DiskGuard {
       segmentsMiB: Math.round((result.segments - freed.segments) / 2 ** 20),
       metadataMiB: Math.round((result.metadata - freed.metadata) / 2 ** 20),
     });
+
     return result;
   }
 
@@ -259,6 +262,7 @@ export class DiskGuard {
     for (const name of Object.keys(this.options.stores)) {
       bytes[name] = 0;
     }
+
     return bytes;
   }
 
@@ -282,6 +286,7 @@ export class DiskGuard {
         batch.map(async (entry) => {
           const file = path.join(entry.parentPath, entry.name);
           const info = await stat(file).catch(() => {});
+
           return { name: entry.name, file, info };
         }),
       );
@@ -320,6 +325,7 @@ export class DiskGuard {
         titles.set(sourceId, title);
       }
     }
+
     return { total, segments };
   }
 }

@@ -59,6 +59,7 @@ class CachedReader {
       throw new MatroskaError(`Unexpected end of file at byte ${start}`);
     }
     this.blocks.push({ start, data });
+
     return data.subarray(0, end - start);
   }
 
@@ -68,6 +69,7 @@ class CachedReader {
     if (!header) {
       throw new MatroskaError(`Truncated element at byte ${pos}`);
     }
+
     return header;
   }
 
@@ -83,6 +85,7 @@ class CachedReader {
       throw new MatroskaError(`Unsized element at byte ${pos}`);
     }
     const data = await this.read(pos, pos + header.headerLength + header.size);
+
     return { header, data };
   }
 }

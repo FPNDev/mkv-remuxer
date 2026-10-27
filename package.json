@@ -39,6 +39,7 @@
     "prepare": "tsc"
   },
   "devDependencies": {
+    "@stylistic/eslint-plugin": "^5.10.0",
     "@types/node": "^26.6.4",
     "oxlint": "^1.87.0",
     "oxlint-tsgolint": "^7.0.2003",

@@ -184,6 +184,7 @@ export class Asset {
 
     if (await exists(file)) {
       segments.touch(file);
+
       return;
     }
 

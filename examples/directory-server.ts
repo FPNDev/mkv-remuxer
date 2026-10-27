@@ -73,6 +73,7 @@ async function scan(dir: string): Promise<LocalSource[]> {
     files.sort((a, b) => a.path.localeCompare(b.path));
     sources.push({ id: idOf(entry.name), name: entry.name, files });
   }
+
   return sources;
 }
 
@@ -94,6 +95,7 @@ async function sourceOf(sourceId: string): Promise<LocalSource> {
   if (!source) {
     throw new NotFoundError(`No source ${sourceId}`);
   }
+
   return source;
 }
 
@@ -108,6 +110,7 @@ async function fileOf(sourceId: string, fileId: string): Promise<LocalFile> {
   if (!file) {
     throw new NotFoundError(`No file ${fileId} in source ${sourceId}`);
   }
+
   return file;
 }
 
@@ -120,6 +123,7 @@ const provider: SourceProvider = {
 
   async lease(sourceId, fileId, _hint, work) {
     const file = await fileOf(sourceId, fileId);
+
     return work({
       name: file.name,
       length: file.length,
@@ -149,6 +153,7 @@ function statusOf(err: unknown): number {
   if (err instanceof MediaTimeoutError) {
     return 504;
   }
+
   return 500;
 }
 
@@ -185,6 +190,7 @@ const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     if (url.pathname === '/') {
       await index(res);
+
       return;
     }
     // /<sourceId>/<fileId>/master.m3u8, /<sourceId>/<fileId>/video/00001.m4s...

@@ -22,6 +22,7 @@ export class InterleavingNotes {
   async load(): Promise<string[]> {
     this.files =
       (await readJson<string[]>(this.layout.interleavingFile())) ?? [];
+
     return [...this.files];
   }
 

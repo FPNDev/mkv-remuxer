@@ -90,5 +90,6 @@ export async function readRange(
   for await (const chunk of source.stream(start, end)) {
     chunks.push(asBuffer(chunk as Uint8Array));
   }
+
   return Buffer.concat(chunks);
 }

@@ -27,6 +27,7 @@ export class WarmQueue {
 
   knows(sourceId: string, fileId: string | undefined): boolean {
     const key = warmKey(sourceId, fileId);
+
     return (
       this.running.has(key) ||
       this.backlog.some(
@@ -47,10 +48,12 @@ export class WarmQueue {
       this.options.logger.debug('Warm backlog is full; refused a title', {
         sourceId,
       });
+
       return false;
     }
     this.backlog.push({ sourceId, fileId });
     this.pump();
+
     return true;
   }
 

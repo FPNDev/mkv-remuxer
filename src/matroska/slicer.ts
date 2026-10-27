@@ -280,6 +280,7 @@ function parseBlockHeader(
       if (cursor >= end) {
         throw new MatroskaError('BlockGroup without a Block');
       }
+
       return null;
     }
   }
@@ -316,6 +317,7 @@ class ByteQueue {
       const next = await this.source.next();
       if (next.done) {
         this.ended = true;
+
         return false;
       }
       const chunk = asBuffer(next.value);
@@ -325,6 +327,7 @@ class ByteQueue {
       this.chunks.push(chunk);
       this.length += chunk.length;
     }
+
     return true;
   }
 
@@ -335,6 +338,7 @@ class ByteQueue {
   take(n: number): Buffer {
     const out = this.copy(n);
     this.consume(n);
+
     return out;
   }
 
@@ -348,6 +352,7 @@ class ByteQueue {
       this.consume(step);
       rest -= step;
     }
+
     return true;
   }
 
@@ -369,6 +374,7 @@ class ByteQueue {
       const end = Math.min(chunk.length, offset + n - written);
       written += chunk.copy(out, written, offset, end);
     }
+
     return out;
   }
 
@@ -381,6 +387,7 @@ class ByteQueue {
       const available = chunk.length - this.head;
       if (available > rest) {
         this.head += rest;
+
         return;
       }
       rest -= available;

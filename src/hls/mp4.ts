@@ -89,6 +89,7 @@ export class Fmp4Splitter extends Transform {
     this.forward(this.header);
     this.remaining = size - headerLength;
     this.header = Buffer.alloc(0);
+
     return offset;
   }
 
@@ -115,6 +116,7 @@ export function hasTopLevelBox(buf: Buffer, type: string): boolean {
     }
     pos += size;
   }
+
   return false;
 }
 

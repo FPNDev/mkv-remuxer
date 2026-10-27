@@ -107,6 +107,7 @@ export class AssetRegistry {
     if (!firstFile) {
       throw new NotFoundError('Source contains no MKV or WebM files');
     }
+
     return firstFile.id;
   }
 

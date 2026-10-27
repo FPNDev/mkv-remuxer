@@ -71,6 +71,7 @@ export class MetadataCache {
 
   trimToBudget(isPinned: (sourceId: string) => boolean): Promise<number> {
     const before = this.lru.size;
+
     return this.remove(this.lru.trim(isPinned), before);
   }
 
@@ -80,6 +81,7 @@ export class MetadataCache {
   ): Promise<number> {
     const before = this.lru.size;
     const target = Math.max(0, before - bytes);
+
     return this.remove(this.lru.trimTo(target, isPinned), before);
   }
 
@@ -90,6 +92,7 @@ export class MetadataCache {
         sourceId,
       });
     }
+
     return before - this.lru.size;
   }
 
