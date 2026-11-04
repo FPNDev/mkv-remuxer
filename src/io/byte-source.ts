@@ -16,7 +16,7 @@ export interface ByteSource {
  * call. The optional hooks let the provider react to how the read is used.
  */
 export interface LeasedSource extends ByteSource {
-  /** File name, checked for a Matroska or WebM extension before indexing. */
+  /** File name, whose extension picks the container before indexing. */
   readonly name: string;
   /** The read now serves a waiting player rather than speculative work. */
   promote?(): void;

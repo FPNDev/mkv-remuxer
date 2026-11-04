@@ -35,6 +35,7 @@ import {
   ticksToSeconds,
   timeSlice,
   type AudioGrid,
+  type MatroskaIndex,
   type MediaIndex,
   type SliceTarget,
   type SubtitleCue,
@@ -46,14 +47,22 @@ import {
   Fmp4Splitter,
   hasTopLevelBox,
   readFragments,
+  TIMELINE_OFFSET_SECONDS,
   trackTimescale,
   writeFragment,
   type FragmentSample,
 } from './mp4.js';
-
-// Every output timestamp is shifted by this much, so a segment whose first
-// frame precedes its own start still carries non-negative times.
-const TIMELINE_OFFSET_SECONDS = 10;
+import {
+  loadSamples,
+  MP4_INPUT_ARGS,
+  mp4DecodeInput,
+  mp4Init,
+  mp4SubtitleSegment,
+  mp4VideoSegment,
+  segmentSamples,
+  SYNC_FLAGS,
+  type Mp4Target,
+} from './mp4-remux.js';
 
 // The encoder needs frames before the boundary to settle. They are encoded
 // and then dropped, so the segment holds only its own samples.
@@ -123,17 +132,32 @@ const SILENCE_FRAMES = 8;
 const TRUEHD_SILENCE_FRAMES = 1200;
 // The same codecs get no usable init segment from a track header alone.
 const INIT_FROM_PACKET_AUDIO = /^(A_AC3|A_EAC3|A_TRUEHD)$/u;
+// MP4 packets probed for a transcoded track's channel layout. TrueHD decodes
+// from its first major sync, which opens the track.
+const PROBE_SAMPLES = 16;
 
 const WEBVTT_OUTPUT_ARGS = ['-c:s', 'webvtt', '-f', 'webvtt', 'pipe:1'];
 
 // Matroska and the fiel box number field orders alike.
 const FIELD_ORDERS = new Set([1, 6, 9, 14]);
 
-export type RemuxTarget = {
-  index: MediaIndex;
+export type RemuxTarget<I extends MediaIndex = MediaIndex> = {
+  index: I;
   source: ByteSource;
   rendition: Rendition;
   signal?: AbortSignal | undefined;
+  /** Where the sample tables of an MP4 file are. */
+  sampleDir: string;
+};
+
+type MatroskaTarget = RemuxTarget<MatroskaIndex>;
+
+/**
+ * What an init segment is written for. source is needed only when
+ * initNeedsPacket holds for the rendition.
+ */
+export type InitTarget = Omit<RemuxTarget, 'source'> & {
+  source?: ByteSource | undefined;
 };
 
 export type InterleavingNotes = {
@@ -196,6 +220,24 @@ type CopySilence = {
   fill(length: number): Promise<FragmentSample[]>;
 };
 
+/** A real packet of a copied track to model its silence on. */
+type SilenceReference = {
+  packet: Buffer;
+  timescale: number;
+};
+
+/**
+ * ffmpeg arguments that encode one AAC segment, and those that encode it
+ * from silence alone. from and to bound, in seconds, the source audio the
+ * encode reads; to is null for the last segment.
+ */
+type AacEncode = {
+  args: string[];
+  silence: string[];
+  from: number;
+  to: number | null;
+};
+
 /** The AAC channel layout, and the filter that turns decoded audio into it. */
 type AacLayout = {
   layout: string;
@@ -231,15 +273,11 @@ export class Remuxer {
   /**
    * Writes the init segment. A rendition for which initNeedsPacket holds
    * needs `source`: its init is cut from the track's first packet, or, when
-   * transcoded, follows the layout decoded from that packet.
+   * transcoded, follows the layout decoded from that packet. A copied track
+   * of an MP4 file wraps its own sample entry.
    */
-  async writeInit(
-    index: MediaIndex,
-    rendition: Rendition,
-    outPath: string,
-    signal?: AbortSignal,
-    source?: ByteSource,
-  ): Promise<void> {
+  async writeInit(target: InitTarget, outPath: string): Promise<void> {
+    const { index, rendition, signal, source } = target;
     if (rendition.type === 'subtitle') {
       throw new Error('Subtitle renditions have no init segment');
     }
@@ -249,29 +287,34 @@ export class Remuxer {
     // does not stall ffmpeg on backpressure.
     splitter.resume();
     const language = rendition.track.iso639Language;
-    if (source && initNeedsPacket(rendition)) {
-      const target = { index, source, rendition, signal };
-      if (rendition.transcode) {
-        // A transcoded track's init segment must describe the AAC output, not
-        // the source codec, so it comes from a fraction of a second of silence.
-        const { layout } = await this.aacLayout(target);
-        await this.ffmpeg.run({
-          args: withLanguage(
-            silenceArgs(rendition, layout, this.options.aacCoder),
-            language,
-          ),
-          output: splitter,
-          signal,
-          timeoutMs: this.options.timeoutMs,
-        });
-      } else {
-        await this.run(
-          target,
-          timeSlice(index, Number.NEGATIVE_INFINITY, null),
-          withLanguage(audioCopyArgs(rendition, ['-frames:a', '1']), language),
-          splitter,
-        );
+    let init: Buffer;
+    if (rendition.type === 'audio' && rendition.transcode) {
+      if (!source) {
+        throw new Error('A transcoded init segment needs its source');
       }
+      // A transcoded track's init segment must describe the AAC output, not
+      // the source codec, so it comes from a fraction of a second of silence.
+      const { layout } = await this.aacLayout({ ...target, source });
+      await this.ffmpeg.run({
+        args: withLanguage(
+          silenceArgs(rendition, layout, this.options.aacCoder),
+          language,
+        ),
+        output: splitter,
+        signal,
+        timeoutMs: this.options.timeoutMs,
+      });
+      init = splitter.init;
+    } else if (index.container === 'mp4') {
+      init = mp4Init(index, rendition);
+    } else if (source && initNeedsPacket(rendition)) {
+      await this.run(
+        { ...target, index, source },
+        timeSlice(index, Number.NEGATIVE_INFINITY, null),
+        withLanguage(audioCopyArgs(rendition, ['-frames:a', '1']), language),
+        splitter,
+      );
+      init = splitter.init;
     } else {
       await this.ffmpeg.run({
         args: withLanguage(copyArgs(rendition), language),
@@ -280,9 +323,9 @@ export class Remuxer {
         signal,
         timeoutMs: this.options.timeoutMs,
       });
+      init = splitter.init;
     }
 
-    let init = splitter.init;
     if (!hasTopLevelBox(init, 'moov')) {
       throw new Error('ffmpeg produced no moov box');
     }
@@ -334,23 +377,32 @@ export class Remuxer {
         callback();
       },
     });
-    await this.run(
-      target,
-      timeSlice(index, Number.NEGATIVE_INFINITY, null),
-      [
-        ...INPUT_ARGS,
-        '-af',
-        `aformat=channel_layouts=${AAC_LAYOUTS[aacChannels(rendition.track)]}`,
-        '-frames:a',
-        '1',
-        '-c:a',
-        'pcm_s16le',
-        '-f',
-        'wav',
-        'pipe:1',
-      ],
-      collector,
-    );
+    const decode = [
+      '-af',
+      `aformat=channel_layouts=${AAC_LAYOUTS[aacChannels(rendition.track)]}`,
+      '-frames:a',
+      '1',
+      '-c:a',
+      'pcm_s16le',
+      '-f',
+      'wav',
+      'pipe:1',
+    ];
+    if (index.container === 'mp4') {
+      await this.ffmpeg.run({
+        args: [...MP4_INPUT_ARGS, ...decode],
+        input: await mp4DecodeInput({ ...target, index }, 0, PROBE_SAMPLES),
+        output: collector,
+        timeoutMs: this.options.timeoutMs,
+      });
+    } else {
+      await this.run(
+        { ...target, index },
+        timeSlice(index, Number.NEGATIVE_INFINITY, null),
+        [...INPUT_ARGS, ...decode],
+        collector,
+      );
+    }
 
     const wav = Buffer.concat(chunks);
     if (wav.length < 44 || wav.toString('latin1', 12, 16) !== 'fmt ') {
@@ -388,8 +440,186 @@ export class Remuxer {
     );
   }
 
-  async writeSegment(
+  writeSegment(
     target: RemuxTarget,
+    n: number,
+    outPath: string,
+  ): Promise<void> {
+    const { index } = target;
+
+    return index.container === 'mp4'
+      ? this.writeMp4Segment({ ...target, index }, n, outPath)
+      : this.writeMatroskaSegment({ ...target, index }, n, outPath);
+  }
+
+  private async writeMp4Segment(
+    target: Mp4Target,
+    n: number,
+    outPath: string,
+  ): Promise<void> {
+    const { rendition, signal } = target;
+    switch (rendition.type) {
+      case 'video': {
+        const fragment = await mp4VideoSegment(target, rendition, n);
+        signal?.throwIfAborted();
+        await writeFileAtomic(outPath, fragment);
+
+        return;
+      }
+      case 'subtitle': {
+        const cues = await mp4SubtitleSegment(target, rendition, n);
+        signal?.throwIfAborted();
+        await writeFileAtomic(outPath, toHlsWebVtt(cues));
+
+        return;
+      }
+      case 'audio':
+        return rendition.transcode
+          ? this.writeMp4Aac(target, rendition, n, outPath)
+          : this.writeMp4CopiedAudio(target, rendition, n, outPath);
+    }
+  }
+
+  // Copied MP4 audio keeps its packets at their own times. A hole of more
+  // than half a packet becomes silence, so the segment covers its whole
+  // playlist range.
+  private async writeMp4CopiedAudio(
+    target: Mp4Target,
+    rendition: AudioRendition,
+    n: number,
+    outPath: string,
+  ): Promise<void> {
+    const { index } = target;
+    const { track } = rendition;
+    const samples = index.samples[track.number]!;
+    const { timescale } = samples;
+    const [from, to] = segmentSamples(index, samples, n);
+    const { records, data } = await loadSamples(target, from, to);
+    const start = samples.starts[n]!;
+    const end =
+      n + 1 < segmentCount(index)
+        ? samples.starts[n + 1]!
+        : Math.round(index.duration * timescale);
+    const grid: AudioGrid = {
+      rate: track.sampleRate ?? timescale,
+      frame: samples.frame ?? AAC_FRAME_SAMPLES,
+      lead: 0,
+      origin: 0,
+    };
+    const half = (grid.frame * timescale) / grid.rate / 2;
+    const silence = () =>
+      this.copySilence(index, rendition, grid, () =>
+        this.firstMp4Packet({ ...target, signal: undefined }),
+      );
+
+    const out: FragmentSample[] = [];
+    let at = start;
+    for (const [i, record] of records.entries()) {
+      const shown = record.dts + record.cto;
+      // It overlaps what is already placed.
+      if (shown < at - half) {
+        continue;
+      }
+      if (shown > at + half) {
+        out.push(...(await (await silence()).fill(shown - at)));
+        at = shown;
+      }
+      out.push({
+        dts: at,
+        duration: record.duration,
+        flags: SYNC_FLAGS,
+        data: data[i]!,
+      });
+      at += record.duration;
+    }
+    if (at < end) {
+      out.push(...(await (await silence()).fill(end - at)));
+    }
+    target.signal?.throwIfAborted();
+    await writeFileAtomic(
+      outPath,
+      writeFragment(start + TIMELINE_OFFSET_SECONDS * timescale, out),
+    );
+  }
+
+  private async firstMp4Packet(target: Mp4Target): Promise<SilenceReference> {
+    const { data } = await loadSamples(target, 0, 1);
+    const packet = data[0];
+    if (!packet) {
+      throw new Error(
+        `Track ${target.rendition.track.number} has no packet to model silence on`,
+      );
+    }
+
+    return {
+      packet,
+      timescale: target.index.samples[target.rendition.track.number]!.timescale,
+    };
+  }
+
+  // The source window around the segment is read whole segments at a time,
+  // and the encode trims it to the segment.
+  private async writeMp4Aac(
+    target: Mp4Target,
+    rendition: AudioRendition,
+    n: number,
+    outPath: string,
+  ): Promise<void> {
+    const { index, signal } = target;
+    const samples = index.samples[rendition.track.number]!;
+    const count = segmentCount(index);
+    const encode = aacEncode(
+      index,
+      rendition,
+      n,
+      await this.aacLayout(target),
+      this.options.aacCoder,
+      MP4_INPUT_ARGS,
+    );
+    const seconds = (k: number) => samples.starts[k]! / samples.timescale;
+    let first = n;
+    while (first > 0 && seconds(first) > encode.from) {
+      first--;
+    }
+    let past = n + 1;
+    while (past < count && (encode.to === null || seconds(past) < encode.to)) {
+      past++;
+    }
+    const input = await mp4DecodeInput(
+      target,
+      samples.first[first]!,
+      past < count ? samples.first[past]! : samples.count,
+    );
+
+    const temp = tempPathFor(outPath);
+    try {
+      if (input.length > 1) {
+        await this.ffmpeg.run({
+          args: encode.args,
+          input,
+          output: [new Fmp4Splitter(), createWriteStream(temp)],
+          signal,
+          timeoutMs: this.options.timeoutMs,
+        });
+      }
+      // The window holds no decodable audio at all.
+      if (input.length === 1 || (await stat(temp)).size === 0) {
+        await this.ffmpeg.run({
+          args: encode.silence,
+          output: [new Fmp4Splitter(), createWriteStream(temp)],
+          signal,
+          timeoutMs: this.options.timeoutMs,
+        });
+      }
+      signal?.throwIfAborted();
+      await rename(temp, outPath);
+    } finally {
+      await rm(temp, { force: true });
+    }
+  }
+
+  private async writeMatroskaSegment(
+    target: MatroskaTarget,
     n: number,
     outPath: string,
   ): Promise<void> {
@@ -509,7 +739,7 @@ export class Remuxer {
   // frame grid. Frames the source lacks become silence, so the segment covers
   // its whole playlist range.
   private async writeCopiedAudio(
-    target: RemuxTarget,
+    target: MatroskaTarget,
     rendition: AudioRendition,
     n: number,
     outPath: string,
@@ -573,7 +803,13 @@ export class Remuxer {
           : Buffer.alloc(0);
         const fragment = readFragments(output);
         const silence = () =>
-          this.copySilence(target, rendition, grid, outPath);
+          this.copySilence(index, rendition, grid, () =>
+            this.firstCopiedPacket(
+              { ...target, signal: undefined },
+              rendition,
+              outPath,
+            ),
+          );
         const timescale =
           fragment.length > 0
             ? trackTimescale(output)
@@ -651,24 +887,18 @@ export class Remuxer {
     }
   }
 
-  // Shared by every segment of the track, so no single caller's signal stops
-  // it. scratch names where its temporary files go.
+  // Shared by every segment of the track, so the reference it is modelled on
+  // must not be stopped by any single caller's signal.
   private copySilence(
-    target: RemuxTarget,
+    index: MediaIndex,
     rendition: AudioRendition,
     grid: AudioGrid,
-    scratch: string,
+    reference: () => Promise<SilenceReference>,
   ): Promise<CopySilence> {
-    const { index } = target;
     const key = `${index.fileName}:${index.fileLength}:${rendition.track.number}`;
     let silence = this.copySilences.get(key);
     if (!silence) {
-      silence = this.makeCopySilence(
-        { ...target, signal: undefined },
-        rendition,
-        grid,
-        scratch,
-      );
+      silence = this.makeCopySilence(rendition, grid, reference);
       silence.catch(() => {
         this.copySilences.delete(key);
       });
@@ -681,12 +911,12 @@ export class Remuxer {
     return silence;
   }
 
-  private async makeCopySilence(
-    target: RemuxTarget,
+  // scratch names where its temporary files go.
+  private async firstCopiedPacket(
+    target: MatroskaTarget,
     rendition: AudioRendition,
-    grid: AudioGrid,
     scratch: string,
-  ): Promise<CopySilence> {
+  ): Promise<SilenceReference> {
     const temp = tempPathFor(scratch);
     let reference: Buffer;
     try {
@@ -706,7 +936,15 @@ export class Remuxer {
       );
     }
 
-    const timescale = trackTimescale(reference);
+    return { packet, timescale: trackTimescale(reference) };
+  }
+
+  private async makeCopySilence(
+    rendition: AudioRendition,
+    grid: AudioGrid,
+    reference: () => Promise<SilenceReference>,
+  ): Promise<CopySilence> {
+    const { packet, timescale } = await reference();
     const unit = timescale / grid.rate;
     const frames = new Map<number, Promise<FragmentSample[]>>();
     const framesOf = (samples: number) => {
@@ -794,7 +1032,10 @@ export class Remuxer {
   // Cues that began in an earlier segment and are still on screen when
   // segment n starts. Each is the source block itself, so it converts to the
   // same cue line as in the segment it began in.
-  private async carriedCues(target: RemuxTarget, n: number): Promise<Buffer[]> {
+  private async carriedCues(
+    target: MatroskaTarget,
+    n: number,
+  ): Promise<Buffer[]> {
     const { index, source, rendition } = target;
     const k = index.segmentStarts[n];
     const keyframe =
@@ -852,7 +1093,7 @@ export class Remuxer {
   }
 
   private async run(
-    target: RemuxTarget,
+    target: MatroskaTarget,
     slice: SliceTarget,
     args: string[],
     output?: Writable | [Transform, Writable],
@@ -910,7 +1151,7 @@ export class Remuxer {
 }
 
 function plan(
-  index: MediaIndex,
+  index: MatroskaIndex,
   rendition: VideoRendition | SubtitleRendition,
   n: number,
 ): Plan {
@@ -930,7 +1171,7 @@ function plan(
   }
 }
 
-function trackHeader(index: MediaIndex, rendition: Rendition): Buffer {
+function trackHeader(index: MatroskaIndex, rendition: Rendition): Buffer {
   return buildTrackHeader(
     Buffer.from(index.ebmlHeader, 'base64'),
     Buffer.from(index.info, 'base64'),
@@ -1052,13 +1293,37 @@ function silenceArgs(
 }
 
 function aacPlan(
-  index: MediaIndex,
+  index: MatroskaIndex,
   rendition: AudioRendition,
   n: number,
   fromKeyframe: boolean,
-  { layout, filter }: AacLayout,
+  layout: AacLayout,
   coder: AacCoder,
 ): Plan {
+  const encode = aacEncode(index, rendition, n, layout, coder, INPUT_ARGS);
+  const from = secondsToTicks(index, encode.from);
+  const to = encode.to === null ? null : secondsToTicks(index, encode.to);
+  const tight = timeSlice(index, from, to, { tight: true });
+
+  return {
+    slices: [
+      ...(fromKeyframe ? [keyframeAudioSlice(index, n, to, tight)] : []),
+      tight,
+      timeSlice(index, from, to),
+    ],
+    args: encode.args,
+    silence: encode.silence,
+  };
+}
+
+function aacEncode(
+  index: MediaIndex,
+  rendition: AudioRendition,
+  n: number,
+  { layout, filter }: AacLayout,
+  coder: AacCoder,
+  inputArgs: string[],
+): AacEncode {
   const { rate, args: outputArgs } = aacOutput(rendition, coder);
   const padding = AUDIO_PAD_FRAMES * AAC_FRAME_SAMPLES;
 
@@ -1071,11 +1336,6 @@ function aacPlan(
     : aacSegmentStart(index, rate, n + 1);
   const encodeFrom = Math.max(0, start - padding);
   const encodeTo = end + padding;
-
-  const toTicks = (samples: number, marginSeconds: number) =>
-    secondsToTicks(index, samples / rate + marginSeconds);
-  const from = toTicks(encodeFrom, -AUDIO_READ_MARGIN_SECONDS);
-  const to = isLast ? null : toTicks(encodeTo, AUDIO_READ_MARGIN_SECONDS);
 
   // Resampling comes first: aresample reads first_pts in input samples, which
   // drift from the output grid when it converts the rate in the same pass.
@@ -1097,15 +1357,10 @@ function aacPlan(
     ...FMP4_OUTPUT_ARGS,
   ];
 
-  const tight = timeSlice(index, from, to, { tight: true });
-
   return {
-    slices: [
-      ...(fromKeyframe ? [keyframeAudioSlice(index, n, to, tight)] : []),
-      tight,
-      timeSlice(index, from, to),
-    ],
-    args: [...INPUT_ARGS, '-af', filters.join(','), ...outputTail],
+    from: encodeFrom / rate - AUDIO_READ_MARGIN_SECONDS,
+    to: isLast ? null : encodeTo / rate + AUDIO_READ_MARGIN_SECONDS,
+    args: [...inputArgs, '-af', filters.join(','), ...outputTail],
     silence: [
       '-f',
       'lavfi',
@@ -1121,7 +1376,7 @@ function aacPlan(
 }
 
 function keyframeAudioSlice(
-  index: MediaIndex,
+  index: MatroskaIndex,
   n: number,
   to: number | null,
   tight: SliceTarget,
@@ -1234,7 +1489,7 @@ function firstBlockOf(samples: FragmentSample[], sizes: number[]): number {
 
 // Matroska rounds each timestamp to a tick, and the rounding error of a
 // track's packets repeats every this many frames.
-function roundingPeriod(index: MediaIndex, grid: AudioGrid): number {
+function roundingPeriod(index: MatroskaIndex, grid: AudioGrid): number {
   const ticks = grid.rate * index.timestampScale;
   let a = grid.frame * 1e9;
   let b = ticks;
@@ -1248,7 +1503,7 @@ function roundingPeriod(index: MediaIndex, grid: AudioGrid): number {
 // A run is complete when the wanted range was found in the bytes read.
 // ffmpeg exits zero on a short read too.
 function isComplete(
-  index: MediaIndex,
+  index: MatroskaIndex,
   slice: SliceTarget,
   result: SliceResult,
 ): boolean {
@@ -1281,7 +1536,7 @@ function isComplete(
 async function retimeSegment(
   file: string,
   init: Buffer,
-  index: MediaIndex,
+  index: MatroskaIndex,
   n: number,
   timestamps: number[],
   logger: Logger,

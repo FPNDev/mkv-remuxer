@@ -1,6 +1,6 @@
-# MKV & WebM remuxer [![npm version](https://img.shields.io/npm/v/@rimjoeh/mkv-remuxer.svg)](https://www.npmjs.com/package/@rimjoeh/mkv-remuxer)
+# MKV, WebM & MP4 remuxer [![npm version](https://img.shields.io/npm/v/@rimjoeh/mkv-remuxer.svg)](https://www.npmjs.com/package/@rimjoeh/mkv-remuxer)
 
-Turns Matroska and WebM files into HLS on demand. Video and audio are
+Turns Matroska, WebM, MP4 and QuickTime files into HLS on demand. Video and audio are
 remuxed into fragmented MP4, subtitles into WebVTT. Video is never
 transcoded: it keeps every packet and attribute, each frame lasts until the
 next one is shown, and the last frame of a segment until the next segment
@@ -16,6 +16,14 @@ on its own frame grid, and fills gaps with silent frames of the same codec.
 Only the byte ranges a
 player asks for are read, so playback can start before the whole file is
 available.
+
+MP4 and QuickTime files (`.mp4`, `.m4v`, `.mov`), fragmented ones
+included, are cut straight from their sample tables, without ffmpeg: every
+segment holds exactly its own samples, with the timing the file gives them
+after its edit lists. Each track's sample table is kept in the metadata
+cache. ffmpeg runs only to encode AAC renditions and the silence that fills
+gaps in copied audio. tx3g and WebVTT subtitle tracks become WebVTT, tx3g
+keeping its bold, italic and underline runs.
 
 The library never opens files or network connections itself. The host hands
 it a `SourceProvider`, which supplies random-access bytes for each source, and
@@ -92,10 +100,10 @@ still land under `<sourceId>/<fileId>/`.
 | Method                                      | Does                                                                              |
 | ------------------------------------------- | --------------------------------------------------------------------------------- |
 | `createHlsService(options)`                 | Checks ffmpeg, loads the cache from disk, starts the cache sweep.                 |
-| `master(sourceId, fileId?, signal?)`        | Master playlist. Without `fileId`, the first Matroska or WebM file of the source. |
+| `master(sourceId, fileId?, signal?)`        | Master playlist. Without `fileId`, the first media file of the source. |
 | `resolve(sourceId, fileId, parts, signal?)` | Master, media playlist, init segment or media segment for one path.               |
 | `warm(sourceId, fileId?)`                   | Prepares the opening segments in the background and reports progress.             |
-| `files(sourceId, signal?)`                  | File list of a source, each file marked `playable` when it is Matroska or WebM.   |
+| `files(sourceId, signal?)`                  | File list of a source, each file marked `playable` when it is Matroska, WebM, MP4 or QuickTime.   |
 | `status()`                                  | Job counts and cache usage.                                                       |
 | `close()`                                   | Stops the cache sweep and kills running ffmpeg processes.                         |
 
@@ -138,7 +146,7 @@ A `LeasedSource` is a `ByteSource` with a `name` plus optional hooks:
 | Member                  | Meaning                                                                                             |
 | ----------------------- | --------------------------------------------------------------------------------------------------- |
 | `length`                | File size in bytes.                                                                                 |
-| `name`                  | File name. It must end in `.mkv` or `.webm`.                                                        |
+| `name`                  | File name. It must end in `.mkv`, `.mk3d`, `.webm`, `.mp4`, `.m4v` or `.mov`.                                                        |
 | `stream(start, end)`    | `Readable` over `[start, end)`.                                                                     |
 | `minReadBytes?`         | Shorter reads are widened to this size.                                                             |
 | `prefetch?(start, end)` | Hint that the range will be read soon.                                                              |
@@ -180,8 +188,9 @@ cache directory and the host store directories.
 | Class                   | When                                                                   |
 | ----------------------- | ---------------------------------------------------------------------- |
 | `NotFoundError`         | Unknown source, file, track or path.                                   |
-| `UnsupportedMediaError` | The file is not Matroska or WebM, or a codec cannot be carried in HLS. |
-| `MatroskaError`         | The file is malformed.                                                 |
+| `UnsupportedMediaError` | The file is not Matroska, WebM, MP4 or QuickTime, or a codec cannot be carried in HLS. |
+| `MatroskaError`         | The Matroska or WebM file is malformed.                                |
+| `Mp4Error`              | The MP4 or QuickTime file is malformed.                                |
 | `MediaTimeoutError`     | `requestTimeoutMs` ran out.                                            |
 | `FfmpegError`           | ffmpeg failed. `stderr` holds the tail of its output.                  |
 | `AbandonedError`        | Every caller went away. Not a failure; nothing needs reporting.        |

@@ -11,7 +11,7 @@ import {
 import { hevcTransferCharacteristics } from '../media/hevc.js';
 import {
   aacSegmentStart,
-  copySegmentStart,
+  copiedAudioStart,
   segmentCount,
   segmentStart,
   type MediaIndex,
@@ -58,13 +58,10 @@ export function mediaPlaylist(index: MediaIndex, rendition: Rendition): string {
     rendition.type === 'audio' && rendition.transcode
       ? aacSampleRate(rendition.track)
       : undefined;
-  const grid =
-    rendition.type === 'audio' && !rendition.transcode
-      ? index.audioGrids[rendition.track.number]
-      : undefined;
+  const copied = rendition.type === 'audio' && !rendition.transcode;
   const start = (n: number) => {
-    if (grid) {
-      return copySegmentStart(index, grid, n) / grid.rate;
+    if (copied) {
+      return copiedAudioStart(index, rendition.track.number, n);
     }
 
     return rate === undefined

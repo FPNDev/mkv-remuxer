@@ -26,4 +26,5 @@ export {
   UnsupportedMediaError,
 } from './errors.js';
 export { MatroskaError } from './matroska/ebml.js';
+export { Mp4Error } from './mp4/boxes.js';
 export { FfmpegError } from './hls/ffmpeg.js';

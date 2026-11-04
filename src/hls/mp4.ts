@@ -1,5 +1,9 @@
 import { Transform, type TransformCallback } from 'node:stream';
 
+// Every output timestamp is shifted by this much, so a segment whose first
+// frame precedes its own start still carries non-negative times.
+export const TIMELINE_OFFSET_SECONDS = 10;
+
 const INIT_BOXES = new Set(['ftyp', 'moov']);
 const MEDIA_BOXES = new Set(['moof', 'mdat']);
 
@@ -366,6 +370,119 @@ export function writeFragment(
   mdat[0]!.write('mdat', 4, 'latin1');
 
   return Buffer.concat([moof, ...mdat]);
+}
+
+/** What an init segment states about its track besides the sample entry. */
+export type InitTrack = {
+  kind: 'video' | 'audio';
+  timescale: number;
+  language: string;
+  width?: number | undefined;
+  height?: number | undefined;
+};
+
+const UNITY_MATRIX = [0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x40000000];
+
+/**
+ * An init segment for one track, numbered like ffmpeg's output so the
+ * fragments of writeFragment belong to it, with `entry` as its only sample
+ * entry.
+ */
+export function initSegment(entry: Buffer, track: InitTrack): Buffer {
+  const isVideo = track.kind === 'video';
+  const matrix = Buffer.alloc(UNITY_MATRIX.length * 4);
+  for (const [i, value] of UNITY_MATRIX.entries()) {
+    matrix.writeUInt32BE(value, i * 4);
+  }
+  const zero = uint32(0);
+
+  const mvhd = box(
+    'mvhd',
+    zero,
+    zero,
+    zero,
+    uint32(1000),
+    zero,
+    uint32(0x10000),
+    Buffer.from([1, 0]),
+    Buffer.alloc(10),
+    matrix,
+    Buffer.alloc(24),
+    uint32(TRACK_ID + 1),
+  );
+  // Enabled and in the movie.
+  const tkhd = box(
+    'tkhd',
+    uint32(3),
+    zero,
+    zero,
+    uint32(TRACK_ID),
+    zero,
+    zero,
+    Buffer.alloc(12),
+    Buffer.from([isVideo ? 0 : 1, 0]),
+    Buffer.alloc(2),
+    matrix,
+    uint32((track.width ?? 0) * 0x10000),
+    uint32((track.height ?? 0) * 0x10000),
+  );
+  const mdhd = box(
+    'mdhd',
+    zero,
+    zero,
+    zero,
+    uint32(track.timescale),
+    zero,
+    packedLanguage(track.language),
+    Buffer.alloc(2),
+  );
+  const hdlr = box(
+    'hdlr',
+    zero,
+    zero,
+    Buffer.from(isVideo ? 'vide' : 'soun', 'latin1'),
+    Buffer.alloc(12),
+    Buffer.alloc(1),
+  );
+  const mediaHeader = isVideo
+    ? box('vmhd', uint32(1), Buffer.alloc(8))
+    : box('smhd', zero, Buffer.alloc(4));
+  const dinf = box('dinf', box('dref', zero, uint32(1), box('url ', uint32(1))));
+  const stbl = box(
+    'stbl',
+    box('stsd', zero, uint32(1), entry),
+    box('stts', zero, zero),
+    box('stsc', zero, zero),
+    box('stsz', zero, zero, zero),
+    box('stco', zero, zero),
+  );
+  const mvex = box(
+    'mvex',
+    box('trex', zero, uint32(TRACK_ID), uint32(1), zero, zero, zero),
+  );
+
+  return Buffer.concat([
+    box('ftyp', Buffer.from('iso6', 'latin1'), zero, Buffer.from('iso6mp41', 'latin1')),
+    box(
+      'moov',
+      mvhd,
+      box('trak', tkhd, box('mdia', mdhd, hdlr, box('minf', mediaHeader, dinf, stbl))),
+      mvex,
+    ),
+  ]);
+}
+
+// Three letters, five bits each, offset by 0x60.
+function packedLanguage(language: string): Buffer {
+  const code = /^[a-z]{3}$/u.test(language) ? language : 'und';
+  const buf = Buffer.alloc(2);
+  buf.writeUInt16BE(
+    ((code.codePointAt(0)! - 0x60) << 10) |
+      ((code.codePointAt(1)! - 0x60) << 5) |
+      (code.codePointAt(2)! - 0x60),
+  );
+
+  return buf;
 }
 
 function box(type: string, ...payload: Buffer[]): Buffer {

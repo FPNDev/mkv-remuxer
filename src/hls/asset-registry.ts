@@ -11,6 +11,7 @@ import {
   segmentCount,
   type MediaIndex,
 } from '../media/media-index.js';
+import { buildMp4Index } from '../media/mp4-index.js';
 import { readJson, writeFileAtomic } from '../util/fs.js';
 import { SizeLru } from '../util/lru.js';
 import { SingleFlight } from '../util/single-flight.js';
@@ -18,7 +19,8 @@ import { Priority, type TaskQueue } from '../util/task-queue.js';
 import { Asset } from './asset.js';
 import type { Remuxer } from './remux.js';
 
-export const MATROSKA_FILE = /\.(mkv|mk3d|webm)$/iu;
+export const MEDIA_FILE = /\.(mkv|mk3d|webm|mp4|m4v|mov)$/iu;
+const MP4_FILE = /\.(mp4|m4v|mov)$/iu;
 // An asset rebuilds from its on-disk index cheaply, so the live set is
 // capped by count rather than by size.
 const MEMORY_ASSETS = 64;
@@ -101,12 +103,12 @@ export class AssetRegistry {
     return asset;
   }
 
-  // The largest Matroska file is the feature; samples and extras are smaller.
+  // The largest media file is the feature; samples and extras are smaller.
   async defaultFileId(sourceId: string): Promise<string> {
     const info = await this.options.provider.list(sourceId);
-    const firstFile = info.files.find((file) => MATROSKA_FILE.test(file.name));
+    const firstFile = info.files.find((file) => MEDIA_FILE.test(file.name));
     if (!firstFile) {
-      throw new NotFoundError('Source contains no MKV or WebM files');
+      throw new NotFoundError('Source contains no MKV, WebM, MP4 or MOV files');
     }
 
     return firstFile.id;
@@ -216,7 +218,7 @@ export class AssetRegistry {
     priority: Priority,
     signal?: AbortSignal,
   ): Promise<IndexBuild> {
-    const { queue, provider, segmentDuration, logger } = this.options;
+    const { queue, provider, segmentDuration, layout, logger } = this.options;
 
     const key = AssetRegistry.indexKey(sourceId, fileId);
 
@@ -230,9 +232,9 @@ export class AssetRegistry {
             fileId,
             { purpose: 'index', signal },
             async (source) => {
-              if (!MATROSKA_FILE.test(source.name)) {
+              if (!MEDIA_FILE.test(source.name)) {
                 throw new UnsupportedMediaError(
-                  `${source.name} is not an MKV or WebM file`,
+                  `${source.name} is not an MKV, WebM, MP4 or MOV file`,
                 );
               }
 
@@ -241,11 +243,14 @@ export class AssetRegistry {
               let index: MediaIndex;
 
               try {
-                index = await buildMediaIndex(
-                  source,
-                  source.name,
-                  segmentDuration,
-                );
+                index = MP4_FILE.test(source.name)
+                  ? await buildMp4Index(
+                      source,
+                      source.name,
+                      segmentDuration,
+                      layout.sampleDir(sourceId, fileId),
+                    )
+                  : await buildMediaIndex(source, source.name, segmentDuration);
               } catch (err) {
                 source.release?.();
                 throw err;

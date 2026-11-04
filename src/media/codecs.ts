@@ -1,25 +1,25 @@
 import { UnsupportedMediaError } from '../errors.js';
 import { childElements, readElementHeader, readUint } from '../matroska/ebml.js';
-import type { MkvTrack } from '../matroska/tracks.js';
 import type { AudioGrid, MediaIndex } from './media-index.js';
+import type { MediaTrack } from './track.js';
 
 export type VideoCodec = 'avc' | 'hevc' | 'av1' | 'vp9';
 
 export type VideoRendition = {
   type: 'video';
-  track: MkvTrack;
+  track: MediaTrack;
   codec: VideoCodec;
 };
 
 export type AudioRendition = {
   type: 'audio';
-  track: MkvTrack;
+  track: MediaTrack;
   transcode: boolean;
 };
 
 export type SubtitleRendition = {
   type: 'subtitle';
-  track: MkvTrack;
+  track: MediaTrack;
 };
 
 export type Rendition = VideoRendition | AudioRendition | SubtitleRendition;
@@ -66,6 +66,7 @@ const TEXT_SUBTITLES = new Set([
   'S_TEXT/ASS',
   'S_TEXT/SSA',
   'S_TEXT/WEBVTT',
+  'S_TEXT/TX3G',
   'S_ASS',
   'S_SSA',
 ]);
@@ -236,11 +237,11 @@ function filterRenditions(
 ): [AudioRendition[], SubtitleRendition[]] {
   const audio: AudioRendition[] = [];
   const subtitles: SubtitleRendition[] = [];
-  const kept: MkvTrack[] = [];
+  const kept: MediaTrack[] = [];
   // Per language: the most channels a playable track has, and the best track
   // that browsers can't play.
   const playableChannels = new Map<string, number>();
-  const aacSources = new Map<string, MkvTrack>();
+  const aacSources = new Map<string, MediaTrack>();
 
   for (const track of index.tracks) {
     if (
@@ -290,16 +291,16 @@ function filterRenditions(
   return [audio, subtitles];
 }
 
-function languageKey(track: MkvTrack): string {
+function languageKey(track: MediaTrack): string {
   return bcp47(track.language) ?? 'und';
 }
 
-function channelCount(track: MkvTrack): number {
+function channelCount(track: MediaTrack): number {
   return track.channels ?? 2;
 }
 
 // Above eight channels only a layout with a fold can become AAC.
-function canTranscode(track: MkvTrack): boolean {
+function canTranscode(track: MediaTrack): boolean {
   const channels = channelCount(track);
 
   return channels <= MAX_AAC_CHANNELS || AAC_FOLDS[channels] !== undefined;
@@ -311,7 +312,7 @@ function qualityTier(codecId: string): number {
   return tier === -1 ? QUALITY_TIERS.length : tier;
 }
 
-function outranks(track: MkvTrack, other: MkvTrack): boolean {
+function outranks(track: MediaTrack, other: MediaTrack): boolean {
   const differences = [
     channelCount(track) - channelCount(other),
     qualityTier(other.codecId) - qualityTier(track.codecId),
@@ -325,6 +326,11 @@ function outranks(track: MkvTrack, other: MkvTrack): boolean {
   }
 
   return false;
+}
+
+/** Whether a video track of this codec can be remuxed to fMP4. */
+export function isRemuxableVideo(codecId: string): boolean {
+  return VIDEO_CODECS[codecId] !== undefined;
 }
 
 /** Whether Chrome and Firefox can play the rendition. */
@@ -341,7 +347,7 @@ export function bcp47(language: string): string | undefined {
 }
 
 // A tie goes to the higher rate.
-export function aacSampleRate(track: MkvTrack): number {
+export function aacSampleRate(track: MediaTrack): number {
   const rate = track.sampleRate ?? 48000;
   let nearest = AAC_SAMPLE_RATES[0]!;
   for (const accepted of AAC_SAMPLE_RATES) {
@@ -353,18 +359,18 @@ export function aacSampleRate(track: MkvTrack): number {
   return nearest;
 }
 
-export function aacFold(track: MkvTrack): AacFold | undefined {
+export function aacFold(track: MediaTrack): AacFold | undefined {
   return AAC_FOLDS[Math.round(track.channels ?? 2)];
 }
 
-export function aacChannels(track: MkvTrack): number {
+export function aacChannels(track: MediaTrack): number {
   const channels = Math.max(1, Math.round(track.channels ?? 2));
 
   return AAC_FOLDS[channels]?.channels ?? channels;
 }
 
 /** Whether the track is served as a copy of its source audio. */
-export function isCopiedAudio(track: MkvTrack): boolean {
+export function isCopiedAudio(track: MediaTrack): boolean {
   return (
     track.kind === 'audio' &&
     (PLAYABLE_AUDIO.test(track.codecId) || COPIED_AUDIO.test(track.codecId))
@@ -420,7 +426,7 @@ type AacConfig = {
   channels: number;
 };
 
-function aacConfig(track: MkvTrack): AacConfig {
+function aacConfig(track: MediaTrack): AacConfig {
   const asc = Buffer.from(track.codecPrivate ?? '', 'base64');
   if (asc.length < 2) {
     return {
@@ -445,7 +451,7 @@ function aacConfig(track: MkvTrack): AacConfig {
   };
 }
 
-function codecDelaySeconds(track: MkvTrack): number {
+function codecDelaySeconds(track: MediaTrack): number {
   const entry = Buffer.from(track.entry, 'base64');
   const header = readElementHeader(entry, 0);
   if (!header) {
@@ -466,7 +472,7 @@ function codecDelaySeconds(track: MkvTrack): number {
  * codec's usual frame size is taken.
  */
 export function copyGrid(
-  track: MkvTrack,
+  track: MediaTrack,
   first: { seconds: number; frame: Buffer } | undefined,
 ): AudioGrid {
   const id = track.codecId;
@@ -526,7 +532,7 @@ function opusSamples(packet: Buffer): number {
 
 /** Samples at the grid rate that one packet of a copied track decodes to. */
 export function packetSamples(
-  track: MkvTrack,
+  track: MediaTrack,
   packet: Buffer,
   grid: AudioGrid,
 ): number {
@@ -556,7 +562,7 @@ export function packetSamples(
  * what is left and is cut short in the fragment.
  */
 export function silenceSizes(
-  track: MkvTrack,
+  track: MediaTrack,
   grid: AudioGrid,
   samples: number,
 ): number[] {
@@ -583,7 +589,7 @@ export function silenceSizes(
  * the track. Later entries use layouts that every encoder takes.
  */
 export function silenceEncoders(
-  track: MkvTrack,
+  track: MediaTrack,
   packet: Buffer,
   grid: AudioGrid,
   samples: number,

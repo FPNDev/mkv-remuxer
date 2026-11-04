@@ -56,9 +56,11 @@ export class Asset {
   readonly renditions: RenditionSet;
   private readonly flights = new SingleFlight();
   private readonly byPath = new Map<string, Rendition>();
+  private readonly sampleDir: string;
 
   constructor(private readonly options: AssetOptions) {
     this.index = options.index;
+    this.sampleDir = options.layout.sampleDir(options.sourceId, options.fileId);
     this.renditions = getRenditions(options.index, options.aacFallback);
     for (const rendition of this.all()) {
       this.byPath.set(renditionPath(rendition), rendition);
@@ -164,8 +166,14 @@ export class Asset {
             priority,
           },
           ({ signal: running }) => {
+            const target = {
+              index: this.index,
+              rendition,
+              signal: running,
+              sampleDir: this.sampleDir,
+            };
             if (!initNeedsPacket(rendition)) {
-              return remuxer.writeInit(this.index, rendition, file, running);
+              return remuxer.writeInit(target, file);
             }
 
             return this.options.provider.lease(
@@ -177,13 +185,7 @@ export class Asset {
               },
               async (source) => {
                 try {
-                  await remuxer.writeInit(
-                    this.index,
-                    rendition,
-                    file,
-                    running,
-                    source,
-                  );
+                  await remuxer.writeInit({ ...target, source }, file);
                 } catch (err) {
                   source.release?.();
                   throw err;
@@ -298,7 +300,13 @@ export class Asset {
 
         try {
           await remuxer.writeSegment(
-            { index: this.index, source, rendition, signal },
+            {
+              index: this.index,
+              source,
+              rendition,
+              signal,
+              sampleDir: this.sampleDir,
+            },
             n,
             file,
           );

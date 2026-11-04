@@ -7,35 +7,11 @@ import {
   readUint,
   type EbmlElement,
 } from './ebml.js';
+import type { MediaTrack, TrackKind } from '../media/track.js';
 import { Id } from './ids.js';
 
-export type TrackKind = 'video' | 'audio' | 'subtitle';
-
-export type MkvTrack = {
-  number: number;
+export type MkvTrack = MediaTrack & {
   uid: string;
-  kind: TrackKind;
-  codecId: string;
-  codecPrivate?: string | undefined;
-  name?: string | undefined;
-  language: string;
-  /** The Language element, ISO 639-2, even when language holds BCP 47. */
-  iso639Language: string;
-  isDefault: boolean;
-  isForced: boolean;
-  isEnabled: boolean;
-  defaultDurationNs?: number | undefined;
-  width?: number | undefined;
-  height?: number | undefined;
-  /** FlagInterlaced and FieldOrder as Matroska stores them. */
-  interlaced?: number | undefined;
-  fieldOrder?: number | undefined;
-  transferCharacteristics?: number | undefined;
-  sampleRate?: number | undefined;
-  channels?: number | undefined;
-  // The TrackEntry element verbatim, base64. Lets a rebuilt header carry the
-  // track through byte for byte.
-  entry: string;
 };
 
 // Matroska TrackType values. Anything else (logo, buttons, control) is dropped.

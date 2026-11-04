@@ -22,7 +22,7 @@ import { exists } from '../util/fs.js';
 import { SingleFlight } from '../util/single-flight.js';
 import { Priority, TaskQueue } from '../util/task-queue.js';
 import type { Asset } from './asset.js';
-import { AssetRegistry, MATROSKA_FILE } from './asset-registry.js';
+import { AssetRegistry, MEDIA_FILE } from './asset-registry.js';
 import { FfmpegError, FfmpegSupervisor } from './ffmpeg.js';
 import { renditionPath, segmentFileName } from './playlists.js';
 import { Remuxer, type AacCoder } from './remux.js';
@@ -102,13 +102,13 @@ export interface HlsStatus {
 }
 
 /**
- * HLS over the Matroska files of the sources a `SourceProvider` serves. Every
+ * HLS over the media files of the sources a `SourceProvider` serves. Every
  * media URL has the shape `<sourceId>/<fileId>/<parts...>`; route it to
  * `resolve`.
  */
 export interface HlsService {
   /**
-   * The master playlist of `fileId`, or of the source's first Matroska file
+   * The master playlist of `fileId`, or of the source's first media file
    * when it is omitted. Builds the index and playlists on first use.
    */
   master(
@@ -328,7 +328,7 @@ class Service implements HlsService {
       // oxlint-disable-next-line oxc/no-map-spread
       files: info.files.map((file) => ({
         ...file,
-        playable: MATROSKA_FILE.test(file.name),
+        playable: MEDIA_FILE.test(file.name),
       })),
     };
   }

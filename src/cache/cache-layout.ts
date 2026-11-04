@@ -33,6 +33,11 @@ export class CacheLayout {
     return path.join(this.mediaDir(sourceId, fileId), 'index.json');
   }
 
+  // The sample tables of an MP4 file, one per track.
+  sampleDir(sourceId: string, fileId: string): string {
+    return path.join(this.mediaDir(sourceId, fileId), 'samples');
+  }
+
   masterFile(sourceId: string, fileId: string): string {
     return path.join(this.mediaDir(sourceId, fileId), 'master.m3u8');
   }

@@ -1,4 +1,4 @@
-import type { MkvTrack } from '../matroska/tracks.js';
+import type { MediaTrack } from './track.js';
 
 const UNSPECIFIED = 2;
 const SPS_NAL_TYPE = 33;
@@ -32,7 +32,7 @@ class BitReader {
   }
 }
 
-export function hevcTransferCharacteristics(track: MkvTrack): number {
+export function hevcTransferCharacteristics(track: MediaTrack): number {
   const { transferCharacteristics, codecPrivate } = track;
   if (
     transferCharacteristics !== undefined &&
