@@ -324,10 +324,10 @@ class Service implements HlsService {
 
     return {
       ...info,
-      // Copies rather than mutates: a provider may hand out a cached listing.
-      // oxlint-disable-next-line oxc/no-map-spread
       files: info.files.map((file) => ({
-        ...file,
+        id: file.id,
+        name: file.name,
+        length: file.length,
         playable: MEDIA_FILE.test(file.name),
       })),
     };
